@@ -129,7 +129,7 @@ func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.Pool, error) {
 		levelLog.Infof("node %v not found", picked)
 		return nil, errors.New("node not found")
 	}
-	levelLog.Debugf("node %v chosen", picked)
+	levelLog.Detailf("node %v chosen", picked)
 	return node.connPool, nil
 }
 

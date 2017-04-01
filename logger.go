@@ -24,18 +24,25 @@ type SimpleLogger struct {
 
 func NewSimpleLogger() *SimpleLogger {
 	return &SimpleLogger{
-		logger: log.New(os.Stdout, "", log.LstdFlags|log.Lshortfile|log.Lmicroseconds),
+		logger: log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile|log.Lmicroseconds),
 	}
 }
 
+func header(lvl, msg string) string {
+	return fmt.Sprintf("%s: %s", lvl, msg)
+}
+
 func (self *SimpleLogger) Output(depth int, s string) {
+	self.logger.Output(depth+1, s)
 }
 
 func (self *SimpleLogger) OutputErr(depth int, s string) {
+	self.logger.Output(depth+1, header("ERR", s))
 }
 
 func (self *SimpleLogger) Flush() {
 }
+
 func NewLevelLogger(l int32, logger Logger) *LevelLogger {
 	return &LevelLogger{Logger: logger, level: l}
 }
@@ -75,6 +82,12 @@ func (self *LevelLogger) Infoln(f string) {
 
 func (self *LevelLogger) Debugf(f string, args ...interface{}) {
 	if self.Logger != nil && self.level > 1 {
+		self.Logger.Output(2, fmt.Sprintf(f, args...))
+	}
+}
+
+func (self *LevelLogger) Detailf(f string, args ...interface{}) {
+	if self.Logger != nil && self.level > 2 {
 		self.Logger.Output(2, fmt.Sprintf(f, args...))
 	}
 }
