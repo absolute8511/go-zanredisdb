@@ -58,6 +58,8 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 
 	t1 := time.Now()
 	pdAddr := fmt.Sprintf("%s:%d", *ip, *port)
+	currentNum := int64(0)
+	errCnt := int64(0)
 	for i := 0; i < *clients; i++ {
 		go func() {
 			var err error
@@ -74,23 +76,46 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 			for j := 0; j < loop; j++ {
 				err = f(c)
 				if err != nil {
-					break
+					atomic.AddInt64(&errCnt, 1)
 				}
+				atomic.AddInt64(&currentNum, 1)
 			}
 			c.Stop()
 			wg.Done()
 		}()
 	}
+	go func() {
+		for {
+			time.Sleep(time.Second * 30)
+			t2 := time.Now()
+			d := t2.Sub(t1)
+			num := atomic.LoadInt64(&currentNum)
+			if num <= 0 {
+				continue
+			}
+			fmt.Printf("%s: %s %0.3f micros/op, %0.2fop/s, err: %v, num:%v\n",
+				cmd,
+				d.String(),
+				float64(d.Nanoseconds()/1e3)/float64(num),
+				float64(num)/d.Seconds(),
+				atomic.LoadInt64(&errCnt),
+				num,
+			)
+		}
+	}()
 
 	wg.Wait()
 	t2 := time.Now()
 	d := t2.Sub(t1)
 
-	fmt.Printf("%s: %s %0.3f micros/op, %0.2fop/s\n",
+	fmt.Printf("%s: %s %0.3f micros/op, %0.2fop/s, err: %v, num:%v\n",
 		cmd,
 		d.String(),
 		float64(d.Nanoseconds()/1e3)/float64(*number),
-		float64(*number)/d.Seconds())
+		float64(*number)/d.Seconds(),
+		atomic.LoadInt64(&errCnt),
+		*number,
+	)
 }
 
 var kvSetBase int64 = 0
