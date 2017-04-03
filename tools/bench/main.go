@@ -58,10 +58,11 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 
 	t1 := time.Now()
 	pdAddr := fmt.Sprintf("%s:%d", *ip, *port)
-	currentNum := int64(0)
+	currentNumList := make([]int64, *clients)
 	errCnt := int64(0)
+	done := int32(0)
 	for i := 0; i < *clients; i++ {
-		go func() {
+		go func(clientIndex int) {
 			var err error
 			conf := &zanredisdb.Conf{
 				DialTimeout:  time.Second * 5,
@@ -78,33 +79,41 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 				if err != nil {
 					atomic.AddInt64(&errCnt, 1)
 				}
-				atomic.AddInt64(&currentNum, 1)
+				atomic.AddInt64(&currentNumList[clientIndex], 1)
 			}
 			c.Stop()
 			wg.Done()
-		}()
+		}(i)
 	}
 	go func() {
-		for {
+		lastNum := int64(0)
+		lastTime := time.Now()
+		for atomic.LoadInt32(&done) == 0 {
 			time.Sleep(time.Second * 30)
 			t2 := time.Now()
-			d := t2.Sub(t1)
-			num := atomic.LoadInt64(&currentNum)
-			if num <= 0 {
+			d := t2.Sub(lastTime)
+			num := int64(0)
+			for i, _ := range currentNumList {
+				num += atomic.LoadInt64(&currentNumList[i])
+			}
+			if num <= lastNum {
 				continue
 			}
 			fmt.Printf("%s: %s %0.3f micros/op, %0.2fop/s, err: %v, num:%v\n",
 				cmd,
 				d.String(),
-				float64(d.Nanoseconds()/1e3)/float64(num),
-				float64(num)/d.Seconds(),
+				float64(d.Nanoseconds()/1e3)/float64(num-lastNum),
+				float64(num-lastNum)/d.Seconds(),
 				atomic.LoadInt64(&errCnt),
 				num,
 			)
+			lastNum = num
+			lastTime = t2
 		}
 	}()
 
 	wg.Wait()
+	atomic.StoreInt32(&done, 1)
 	t2 := time.Now()
 	d := t2.Sub(t1)
 
@@ -207,7 +216,7 @@ func main() {
 		*round = 1
 	}
 
-	zanredisdb.SetLogger(1, zanredisdb.NewSimpleLogger())
+	zanredisdb.SetLogger(0, zanredisdb.NewSimpleLogger())
 	ts := strings.Split(*tests, ",")
 	for i := 0; i < *round; i++ {
 		for _, s := range ts {
