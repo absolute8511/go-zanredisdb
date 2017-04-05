@@ -31,8 +31,9 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	return conn.Do(cmd, args...)
+	rsp, err := conn.Do(cmd, args...)
+	conn.Close()
+	return rsp, err
 }
 
 func (self *ZanRedisClient) KVGet(set string, key []byte) ([]byte, error) {

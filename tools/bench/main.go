@@ -66,8 +66,8 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 			var err error
 			conf := &zanredisdb.Conf{
 				DialTimeout:  time.Second * 5,
-				ReadTimeout:  time.Second * 5,
-				WriteTimeout: time.Second * 5,
+				ReadTimeout:  0,
+				WriteTimeout: 0,
 				TendInterval: 10,
 				Namespace:    *namespace,
 			}
