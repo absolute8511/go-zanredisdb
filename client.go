@@ -2,6 +2,11 @@ package zanredisdb
 
 import (
 	"github.com/garyburd/redigo/redis"
+	"time"
+)
+
+const (
+	MIN_RETRY_SLEEP = time.Millisecond * 32
 )
 
 type ZanRedisClient struct {
@@ -27,43 +32,42 @@ func (self *ZanRedisClient) Stop() {
 
 func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader bool,
 	args ...interface{}) (interface{}, error) {
-	conn, err := self.cluster.GetConn(shardingKey, toLeader)
-	if err != nil {
-		return nil, err
+	retry := uint32(0)
+	var err error
+	var rsp interface{}
+	var conn redis.Conn
+	for retry < 3 {
+		retry++
+		conn, err = self.cluster.GetConn(shardingKey, toLeader)
+		if err != nil {
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+			continue
+		}
+		rsp, err = conn.Do(cmd, args...)
+		conn.Close()
+		if err != nil {
+			self.cluster.MaybeTriggerCheckForError(err, 0)
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+		} else {
+			break
+		}
 	}
-	rsp, err := conn.Do(cmd, args...)
-	conn.Close()
 	return rsp, err
 }
 
 func (self *ZanRedisClient) KVGet(set string, key []byte) ([]byte, error) {
 	pk := NewPKey(self.conf.Namespace, set, key)
-	conn, err := self.cluster.GetConn(pk.ShardingKey(), true)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	return redis.Bytes(conn.Do("GET", pk.RawKey))
+	return redis.Bytes(self.DoRedis("GET", pk.ShardingKey(), true, pk.RawKey))
 }
 
 func (self *ZanRedisClient) KVSet(set string, key []byte, value []byte) error {
 	pk := NewPKey(self.conf.Namespace, set, key)
-	conn, err := self.cluster.GetConn(pk.ShardingKey(), true)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_, err = redis.String(conn.Do("SET", pk.RawKey, value))
+	_, err := redis.String(self.DoRedis("SET", pk.ShardingKey(), true, pk.RawKey, value))
 	return err
 }
 
 func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	pk := NewPKey(self.conf.Namespace, set, key)
-	conn, err := self.cluster.GetConn(pk.ShardingKey(), true)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_, err = redis.Int(conn.Do("DEL", pk.RawKey))
+	_, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
 	return err
 }

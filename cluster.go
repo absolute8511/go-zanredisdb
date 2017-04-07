@@ -86,11 +86,11 @@ func NewCluster(conf *Conf) *Cluster {
 	return self
 }
 
-func (self *Cluster) TriggerCheckForError(err error, delay time.Duration) {
+func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) {
 	if err == nil {
 		return
 	}
-	if IsFailedOnNotLeader(err) || IsFailedOnNotWritable(err) {
+	if IsFailedOnClusterChanged(err) {
 		time.Sleep(delay)
 		select {
 		case self.tendTrigger <- 1:
@@ -228,15 +228,18 @@ func (self *Cluster) tend() {
 			return
 		}
 		node := partNodeInfo.Leader
-		broadcastAddress := node.BroadcastAddress
-		port := node.RedisPort
-		leaderAddr := net.JoinHostPort(broadcastAddress, port)
+		leaderAddr := ""
+		if node.BroadcastAddress != "" {
+			leaderAddr = net.JoinHostPort(node.BroadcastAddress, node.RedisPort)
+		} else {
+			levelLog.Infof("partition %v missing leader node", partID)
+		}
 		replicas := make([]string, 0)
 		for _, n := range partNodeInfo.Replicas {
-			broadcastAddress := n.BroadcastAddress
-			port := n.RedisPort
-			addr := net.JoinHostPort(broadcastAddress, port)
-			replicas = append(replicas, addr)
+			if n.BroadcastAddress != "" {
+				addr := net.JoinHostPort(n.BroadcastAddress, n.RedisPort)
+				replicas = append(replicas, addr)
+			}
 		}
 		newPartitions.PList[partID] = PartitionInfo{Leader: leaderAddr, Replicas: replicas}
 	}
