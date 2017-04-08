@@ -36,12 +36,14 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	var err error
 	var rsp interface{}
 	var conn redis.Conn
-	for retry < 3 {
+	var sleeped time.Duration
+	for retry < 3 || sleeped < self.conf.ReadTimeout+time.Millisecond*100 {
 		retry++
 		conn, err = self.cluster.GetConn(shardingKey, toLeader)
 		if err != nil {
 			self.cluster.MaybeTriggerCheckForError(err, 0)
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 			continue
 		}
 		rsp, err = conn.Do(cmd, args...)
@@ -49,6 +51,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 		if err != nil {
 			self.cluster.MaybeTriggerCheckForError(err, 0)
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 		} else {
 			break
 		}
