@@ -40,6 +40,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 		retry++
 		conn, err = self.cluster.GetConn(shardingKey, toLeader)
 		if err != nil {
+			self.cluster.MaybeTriggerCheckForError(err, 0)
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 			continue
 		}

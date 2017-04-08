@@ -11,6 +11,13 @@ var (
 	FailedOnNotWritable    = "E_FAILED_ON_NOT_WRITABLE"
 )
 
+func IsConnectRefused(err error) bool {
+	if err != nil {
+		return strings.Index(strings.ToLower(err.Error()), "connection refused") != -1
+	}
+	return false
+}
+
 func IsFailedOnClusterChanged(err error) bool {
 	if err != nil {
 		return strings.HasPrefix(err.Error(), FailedOnClusterChanged)

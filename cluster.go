@@ -62,6 +62,9 @@ func NewCluster(conf *Conf) *Cluster {
 		nodes:        make(map[string]*RedisHost),
 		namespace:    conf.Namespace,
 	}
+	if self.tendInterval <= 0 {
+		panic("tend interval should be great than zero")
+	}
 
 	copy(self.LookupList, conf.LookupList)
 
@@ -90,7 +93,7 @@ func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) {
 	if err == nil {
 		return
 	}
-	if IsFailedOnClusterChanged(err) {
+	if IsConnectRefused(err) || IsFailedOnClusterChanged(err) {
 		time.Sleep(delay)
 		select {
 		case self.tendTrigger <- 1:
