@@ -216,7 +216,7 @@ func main() {
 		*round = 1
 	}
 
-	zanredisdb.SetLogger(0, zanredisdb.NewSimpleLogger())
+	zanredisdb.SetLogger(1, zanredisdb.NewSimpleLogger())
 	ts := strings.Split(*tests, ",")
 	for i := 0; i < *round; i++ {
 		for _, s := range ts {

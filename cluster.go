@@ -97,6 +97,7 @@ func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) {
 		time.Sleep(delay)
 		select {
 		case self.tendTrigger <- 1:
+			levelLog.Infof("trigger tend for err: %v", err)
 		default:
 		}
 	}
@@ -320,6 +321,7 @@ func (self *Cluster) tendNodes() {
 		case <-tendTicker.C:
 			self.tend()
 		case <-self.tendTrigger:
+			levelLog.Infof("trigger tend")
 			self.tend()
 			time.Sleep(time.Millisecond * 100)
 		case <-self.quitC:
@@ -339,5 +341,5 @@ func (self *Cluster) tendNodes() {
 func (self *Cluster) Close() {
 	close(self.quitC)
 	self.wg.Wait()
-	levelLog.Infof("cluster exit")
+	levelLog.Debugf("cluster exit")
 }

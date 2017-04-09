@@ -37,7 +37,11 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	var rsp interface{}
 	var conn redis.Conn
 	var sleeped time.Duration
-	for retry < 3 || sleeped < self.conf.ReadTimeout+time.Millisecond*100 {
+	ro := self.conf.ReadTimeout / 2
+	if ro == 0 {
+		ro = time.Second
+	}
+	for retry < 3 || sleeped < ro+time.Millisecond*100 {
 		retry++
 		conn, err = self.cluster.GetConn(shardingKey, toLeader)
 		if err != nil {
