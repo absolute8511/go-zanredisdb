@@ -122,7 +122,7 @@ func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.Pool, error) {
 		if len(part.Replicas) == 0 {
 			return nil, errors.New("no any replica for partition")
 		}
-		picked = part.Replicas[int(atomic.LoadInt32(&part.chosenIndex))%len(part.Replicas)]
+		picked = part.Replicas[int(atomic.AddInt32(&part.chosenIndex, 1))%len(part.Replicas)]
 	}
 
 	if picked == "" {
