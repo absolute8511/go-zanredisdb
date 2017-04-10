@@ -126,7 +126,7 @@ func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.Pool, error) {
 	}
 
 	if picked == "" {
-		return nil, errors.New("no partition node")
+		return nil, errNoNodeForPartition
 	}
 	node, ok := self.nodes[picked]
 	if !ok {

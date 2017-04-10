@@ -1,6 +1,7 @@
 package zanredisdb
 
 import (
+	"errors"
 	"strings"
 	"time"
 )
@@ -9,6 +10,7 @@ var (
 	FailedOnClusterChanged = "ERR_CLUSTER_CHANGED"
 	FailedOnNotLeader      = "E_FAILED_ON_NOT_LEADER"
 	FailedOnNotWritable    = "E_FAILED_ON_NOT_WRITABLE"
+	errNoNodeForPartition  = errors.New("no partition node")
 )
 
 func IsConnectRefused(err error) bool {
@@ -20,7 +22,7 @@ func IsConnectRefused(err error) bool {
 
 func IsFailedOnClusterChanged(err error) bool {
 	if err != nil {
-		return strings.HasPrefix(err.Error(), FailedOnClusterChanged)
+		return strings.HasPrefix(err.Error(), FailedOnClusterChanged) || err == errNoNodeForPartition
 	}
 	return false
 }
