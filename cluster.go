@@ -89,9 +89,9 @@ func NewCluster(conf *Conf) *Cluster {
 	return self
 }
 
-func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) {
+func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) bool {
 	if err == nil {
-		return
+		return false
 	}
 	if IsConnectRefused(err) || IsFailedOnClusterChanged(err) {
 		time.Sleep(delay)
@@ -100,7 +100,9 @@ func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) {
 			levelLog.Infof("trigger tend for err: %v", err)
 		default:
 		}
+		return true
 	}
+	return false
 }
 
 func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.Pool, error) {

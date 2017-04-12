@@ -53,7 +53,14 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 		rsp, err = conn.Do(cmd, args...)
 		conn.Close()
 		if err != nil {
-			self.cluster.MaybeTriggerCheckForError(err, 0)
+			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
+			if clusterChanged {
+				// we can retry for cluster error
+			} else if _, ok := err.(redis.Error); ok {
+				// other error from command reply no need retry
+				// can fail fast for some un-recovery error
+				break
+			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 		} else {
