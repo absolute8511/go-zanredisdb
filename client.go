@@ -55,6 +55,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 		if err != nil {
 			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
 			if clusterChanged {
+				levelLog.Detailf("command err for cluster changed: %v, %v", shardingKey, args)
 				// we can retry for cluster error
 			} else if _, ok := err.(redis.Error); ok {
 				// other error from command reply no need retry
