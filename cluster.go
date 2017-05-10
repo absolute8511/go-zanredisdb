@@ -35,8 +35,18 @@ type Partitions struct {
 	PList []PartitionInfo
 }
 
+func FindString(src []string, f string) int {
+	for i, v := range src {
+		if f == v {
+			return i
+		}
+	}
+	return -1
+}
+
 type Cluster struct {
 	sync.Mutex
+	conf        *Conf
 	lookupMtx   sync.RWMutex
 	LookupList  []string
 	lookupIndex int
@@ -61,6 +71,7 @@ func NewCluster(conf *Conf) *Cluster {
 		LookupList:   make([]string, len(conf.LookupList)),
 		nodes:        make(map[string]*RedisHost),
 		namespace:    conf.Namespace,
+		conf:         conf,
 	}
 	if self.tendInterval <= 0 {
 		panic("tend interval should be great than zero")
@@ -148,7 +159,7 @@ func (self *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 	return conn, nil
 }
 
-func (self *Cluster) nextLookupEndpoint() (string, string) {
+func (self *Cluster) nextLookupEndpoint() (string, string, string) {
 	self.lookupMtx.RLock()
 	if self.lookupIndex >= len(self.LookupList) {
 		self.lookupIndex = 0
@@ -177,17 +188,34 @@ func (self *Cluster) nextLookupEndpoint() (string, string) {
 	v, _ := url.ParseQuery(tmpUrl.RawQuery)
 	v.Add("epoch", strconv.FormatInt(self.epoch, 10))
 	tmpUrl.RawQuery = v.Encode()
-	return tmpUrl.String(), listUrl.String()
+	return addr, tmpUrl.String(), listUrl.String()
 }
 
 func (self *Cluster) tend() {
-	queryStr, discoveryUrl := self.nextLookupEndpoint()
+	addr, queryStr, discoveryUrl := self.nextLookupEndpoint()
 	// discovery other lookupd nodes from current lookupd or from etcd
 	levelLog.Debugf("discovery nsqlookupd %s", discoveryUrl)
 	var listResp listPDResp
-	_, err := apiRequest("GET", discoveryUrl, nil, &listResp)
+	httpRespCode, err := apiRequest("GET", discoveryUrl, nil, &listResp)
 	if err != nil {
 		levelLog.Warningf("error discovery lookup (%s) - %s", discoveryUrl, err)
+		if httpRespCode < 0 {
+			self.lookupMtx.Lock()
+			// remove failed if not seed nodes
+			if FindString(self.conf.LookupList, addr) == -1 {
+				levelLog.Infof("removing failed lookup : %v", addr)
+				newLookupList := make([]string, 0)
+				for _, v := range self.LookupList {
+					if v == addr {
+						continue
+					} else {
+						newLookupList = append(newLookupList, v)
+					}
+				}
+				self.LookupList = newLookupList
+			}
+			self.lookupMtx.Unlock()
+		}
 	} else {
 		for _, node := range listResp.PDNodes {
 			addr := net.JoinHostPort(node.NodeIP, node.HttpPort)
@@ -228,6 +256,14 @@ func (self *Cluster) tend() {
 		levelLog.Debugf("namespace info keep unchanged: %v", data)
 		return
 	}
+	if data.Epoch < atomic.LoadInt64(&self.epoch) {
+		levelLog.Infof("namespace info is older: %v vs %v", data.Epoch, atomic.LoadInt64(&self.epoch))
+		return
+	}
+	self.Lock()
+	oldPartitions := self.parts
+	self.Unlock()
+
 	for partID, partNodeInfo := range data.Partitions {
 		if partID >= newPartitions.PNum || partID < 0 {
 			levelLog.Errorf("got invalid partition : %v", partID)
@@ -235,10 +271,15 @@ func (self *Cluster) tend() {
 		}
 		node := partNodeInfo.Leader
 		leaderAddr := ""
+		var oldPartInfo PartitionInfo
+		if partID < len(oldPartitions.PList) {
+			oldPartInfo = oldPartitions.PList[partID]
+		}
 		if node.BroadcastAddress != "" {
 			leaderAddr = net.JoinHostPort(node.BroadcastAddress, node.RedisPort)
 		} else {
-			levelLog.Infof("partition %v missing leader node", partID)
+			levelLog.Infof("partition %v missing leader node, use old instead", partID, oldPartInfo.Leader)
+			leaderAddr = oldPartInfo.Leader
 		}
 		replicas := make([]string, 0)
 		for _, n := range partNodeInfo.Replicas {
@@ -246,6 +287,9 @@ func (self *Cluster) tend() {
 				addr := net.JoinHostPort(n.BroadcastAddress, n.RedisPort)
 				replicas = append(replicas, addr)
 			}
+		}
+		if len(replicas) == 0 {
+			replicas = oldPartInfo.Replicas
 		}
 		newPartitions.PList[partID] = PartitionInfo{Leader: leaderAddr, Replicas: replicas}
 	}
