@@ -194,7 +194,7 @@ func (self *Cluster) nextLookupEndpoint() (string, string, string) {
 func (self *Cluster) tend() {
 	addr, queryStr, discoveryUrl := self.nextLookupEndpoint()
 	// discovery other lookupd nodes from current lookupd or from etcd
-	levelLog.Debugf("discovery nsqlookupd %s", discoveryUrl)
+	levelLog.Debugf("discovery lookupd %s", discoveryUrl)
 	var listResp listPDResp
 	httpRespCode, err := apiRequest("GET", discoveryUrl, nil, &listResp)
 	if err != nil {
