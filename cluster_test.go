@@ -31,10 +31,10 @@ func newTestLogger(t *testing.T) *testLogger {
 
 func TestClusterInfo(t *testing.T) {
 	conf := &Conf{
-		DialTimeout:  time.Second * 5,
-		ReadTimeout:  time.Second * 5,
-		WriteTimeout: time.Second * 5,
-		TendInterval: 3,
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
 		Namespace:    testNS,
 	}
 	conf.LookupList = append(conf.LookupList, pdAddr)
@@ -61,10 +61,10 @@ func TestClusterInfo(t *testing.T) {
 
 func TestClusterReadWrite(t *testing.T) {
 	conf := &Conf{
-		DialTimeout:  time.Second * 5,
-		ReadTimeout:  time.Second * 5,
-		WriteTimeout: time.Second * 5,
-		TendInterval: 3,
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
 		Namespace:    testNS,
 	}
 	conf.LookupList = append(conf.LookupList, pdAddr)
@@ -101,5 +101,52 @@ func TestClusterReadWrite(t *testing.T) {
 			t.Errorf("should equal: %v, %v", value, testValue)
 		}
 		conn.Do("DEL", rawKey)
+	}
+}
+
+func TestClusterRemoveFailedLookup(t *testing.T) {
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	failedSeedLookup := "127.0.0.1:4111"
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	conf.LookupList = append(conf.LookupList, failedSeedLookup)
+	SetLogger(2, newTestLogger(t))
+	cluster := NewCluster(conf)
+	defer cluster.Close()
+	nodeNum := len(cluster.nodes)
+	if nodeNum == 0 {
+		t.Fatal("cluster nodes should not empty")
+	}
+	cluster.lookupMtx.Lock()
+	for _, addr := range conf.LookupList {
+		if FindString(cluster.LookupList, addr) == -1 {
+			t.Errorf("cluster lookup seed should be the same")
+		}
+	}
+	failedLookup := "127.0.0.1:3111"
+	cluster.LookupList = append(cluster.LookupList, failedLookup)
+	cluster.lookupMtx.Unlock()
+
+	time.Sleep(time.Second * time.Duration(conf.TendInterval*3))
+	if nodeNum != len(cluster.nodes) {
+		t.Fatal("cluster nodes should not changed")
+	}
+
+	time.Sleep(time.Second * time.Duration(conf.TendInterval*5))
+	cluster.lookupMtx.Lock()
+	defer cluster.lookupMtx.Unlock()
+	for _, addr := range conf.LookupList {
+		if FindString(cluster.LookupList, addr) == -1 {
+			t.Errorf("cluster lookup seed should be the same")
+		}
+	}
+
+	if FindString(cluster.LookupList, failedLookup) != -1 {
+		t.Errorf("failed lookup should be removed")
 	}
 }
