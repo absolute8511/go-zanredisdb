@@ -1,8 +1,10 @@
 package zanredisdb
 
 import (
-	"github.com/garyburd/redigo/redis"
+	"errors"
 	"time"
+
+	"github.com/garyburd/redigo/redis"
 )
 
 const (
@@ -86,4 +88,85 @@ func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	pk := NewPKey(self.conf.Namespace, set, key)
 	_, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
 	return err
+}
+
+func (client *ZanRedisClient) scanChannel(cmd, set string, ch chan []byte) {
+	cursor := []byte("")
+	for {
+		sk := NewScanKey(client.conf.Namespace, set, cursor)
+		result, err := redis.Values(client.DoRedis(cmd, sk.ShardingKey(), false, sk.RawKey))
+		if err != nil {
+			close(ch)
+			break
+		}
+		if len(result) != 2 {
+			close(ch)
+			break
+		}
+
+		cursor = result[0].([]byte)
+		for _, res := range result[1].([]interface{}) {
+			ch <- res.([]byte)
+		}
+
+		if len(cursor) == 0 {
+			close(ch)
+			break
+		}
+
+	}
+}
+
+func (client *ZanRedisClient) scan(cmd, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	sk := NewPKey(client.conf.Namespace, set, cursor)
+	result, err := redis.Values(client.DoRedis(cmd, sk.ShardingKey(), false, sk.RawKey))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(result) != 2 {
+		return nil, nil, errors.New("no enough return parameters")
+	}
+
+	return result[0].([]byte), result[1].([][]byte), nil
+}
+
+func (client *ZanRedisClient) KVScanChannel(set string, ch chan []byte) {
+	client.scanChannel("SCAN", set, ch)
+}
+
+func (client *ZanRedisClient) KVScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.scan("SCAN", set, count, cursor)
+}
+
+func (client *ZanRedisClient) HScanChannel(set string, ch chan []byte) {
+	client.scanChannel("HSCAN", set, ch)
+}
+
+func (client *ZanRedisClient) HScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.scan("HSCAN", set, count, cursor)
+}
+
+func (client *ZanRedisClient) SScanChannel(set string, ch chan []byte) {
+	client.scanChannel("SSCAN", set, ch)
+}
+
+func (client *ZanRedisClient) SScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.scan("SSCAN", set, count, cursor)
+}
+
+func (client *ZanRedisClient) ZScanChannel(set string, ch chan []byte) {
+	client.scanChannel("ZSCAN", set, ch)
+}
+
+func (client *ZanRedisClient) ZScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.scan("ZSCAN", set, count, cursor)
+}
+
+func (client *ZanRedisClient) LScanChannel(set string, ch chan []byte) {
+	client.scanChannel("LSCAN", set, ch)
+}
+
+func (client *ZanRedisClient) LScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.scan("LSCAN", set, count, cursor)
 }
