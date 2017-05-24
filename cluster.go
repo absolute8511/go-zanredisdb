@@ -159,6 +159,36 @@ func (self *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 	return conn, nil
 }
 
+func (cluster *Cluster) GetConns(ns string) ([]redis.Conn, error) {
+	cluster.Lock()
+	defer cluster.Unlock()
+
+	if len(cluster.nodes) == 0 {
+		return nil, errors.New("no server is available right now")
+	}
+
+	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
+		return nil, errors.New("no any partition")
+	}
+
+	var hosts []string
+	for _, p := range cluster.parts.PList {
+		hosts = append(hosts, p.Leader)
+	}
+
+	var conns []redis.Conn
+	for _, h := range hosts {
+		if v, ok := cluster.nodes[h]; ok {
+			conn := v.connPool.Get()
+			conns = append(conns, conn)
+		}
+	}
+	if len(conns) == 0 {
+		return nil, errNoNodeForPartition
+	}
+	return conns, nil
+}
+
 func (self *Cluster) nextLookupEndpoint() (string, string, string) {
 	self.lookupMtx.RLock()
 	if self.lookupIndex >= len(self.LookupList) {

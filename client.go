@@ -2,6 +2,7 @@ package zanredisdb
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/garyburd/redigo/redis"
@@ -73,6 +74,54 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	return rsp, err
 }
 
+func (client *ZanRedisClient) DoScan(cmd string, ns string, args ...interface{}) ([]interface{}, error) {
+	retry := uint32(0)
+	var err error
+	var rsps []interface{}
+	var conns []redis.Conn
+	var sleeped time.Duration
+	var wg sync.WaitGroup
+	ro := client.conf.ReadTimeout / 2
+	if ro == 0 {
+		ro = time.Second
+	}
+	for retry < 3 || sleeped < ro+time.Millisecond*100 {
+		retry++
+		conns, err = client.cluster.GetConns(ns)
+		if err != nil {
+			client.cluster.MaybeTriggerCheckForError(err, 0)
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
+			continue
+		}
+		rsps = make([]interface{}, len(conns))
+		for i, c := range conns {
+			wg.Add(1)
+			go func(index int, c redis.Conn) {
+				rsps[index], err = c.Do(cmd, args...)
+				wg.Add(-1)
+			}(i, c)
+		}
+		wg.Wait()
+		if err != nil {
+			clusterChanged := client.cluster.MaybeTriggerCheckForError(err, 0)
+			if clusterChanged {
+				levelLog.Detailf("command err for cluster changed: %v, %v, %v", cmd, ns, args)
+				// we can retry for cluster error
+			} else if _, ok := err.(redis.Error); ok {
+				// other error from command reply no need retry
+				// can fail fast for some un-recovery error
+				break
+			}
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
+		} else {
+			break
+		}
+	}
+	return rsps, err
+}
+
 func (self *ZanRedisClient) KVGet(set string, key []byte) ([]byte, error) {
 	pk := NewPKey(self.conf.Namespace, set, key)
 	return redis.Bytes(self.DoRedis("GET", pk.ShardingKey(), true, pk.RawKey))
@@ -94,7 +143,7 @@ func (client *ZanRedisClient) scanChannel(cmd, set string, ch chan []byte) {
 	cursor := []byte("")
 	for {
 		sk := NewScanKey(client.conf.Namespace, set, cursor)
-		result, err := redis.Values(client.DoRedis(cmd, sk.ShardingKey(), false, sk.RawKey))
+		result, err := redis.Values(client.DoRedis(cmd, sk.ShardingKey(), true, sk.RawKey))
 		if err != nil {
 			close(ch)
 			break
@@ -119,7 +168,7 @@ func (client *ZanRedisClient) scanChannel(cmd, set string, ch chan []byte) {
 
 func (client *ZanRedisClient) scan(cmd, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	sk := NewPKey(client.conf.Namespace, set, cursor)
-	result, err := redis.Values(client.DoRedis(cmd, sk.ShardingKey(), false, sk.RawKey))
+	result, err := redis.Values(client.DoRedis(cmd, sk.ShardingKey(), true, sk.RawKey))
 	if err != nil {
 		return nil, nil, err
 	}
