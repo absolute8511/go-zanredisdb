@@ -33,6 +33,12 @@ func (self *ZanRedisClient) Stop() {
 	}
 }
 
+func DoRedisCmd(conn redis.Conn, cmdName string, args ...interface{}) (reply interface{}, err error) {
+	defer conn.Close()
+	rsp, err := conn.Do(cmdName, args...)
+	return rsp, err
+}
+
 func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader bool,
 	args ...interface{}) (interface{}, error) {
 	retry := uint32(0)
@@ -53,12 +59,12 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 			continue
 		}
-		rsp, err = conn.Do(cmd, args...)
-		conn.Close()
+		rsp, err = DoRedisCmd(conn, cmd, args...)
+
 		if err != nil {
 			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
 			if clusterChanged {
-				levelLog.Detailf("command err for cluster changed: %v, %v", shardingKey, args)
+				levelLog.Infof("command err for cluster changed: %v, %v", shardingKey, args)
 				// we can retry for cluster error
 			} else if _, ok := err.(redis.Error); ok {
 				// other error from command reply no need retry
