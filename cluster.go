@@ -159,16 +159,16 @@ func (self *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 	return conn, nil
 }
 
-func (cluster *Cluster) GetConns(ns string) ([]redis.Conn, error) {
+func (cluster *Cluster) GetConns() ([]redis.Conn, []string, error) {
 	cluster.Lock()
 	defer cluster.Unlock()
 
 	if len(cluster.nodes) == 0 {
-		return nil, errors.New("no server is available right now")
+		return nil, nil, errors.New("no server is available right now")
 	}
 
 	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
-		return nil, errors.New("no any partition")
+		return nil, nil, errors.New("no any partition")
 	}
 
 	var hosts []string
@@ -177,16 +177,44 @@ func (cluster *Cluster) GetConns(ns string) ([]redis.Conn, error) {
 	}
 
 	var conns []redis.Conn
-	for _, h := range hosts {
+	for i, h := range hosts {
 		if v, ok := cluster.nodes[h]; ok {
 			conn := v.connPool.Get()
 			conns = append(conns, conn)
+		} else {
+			hosts = append(hosts[:i], hosts[i+1:]...)
 		}
 	}
 	if len(conns) == 0 {
-		return nil, errNoNodeForPartition
+		return nil, nil, errNoNodeForPartition
 	}
-	return conns, nil
+	return conns, hosts, nil
+}
+
+func (cluster *Cluster) GetConnsByHosts(hosts []string) ([]redis.Conn, []string, error) {
+	cluster.Lock()
+	defer cluster.Unlock()
+
+	if len(cluster.nodes) == 0 {
+		return nil, nil, errors.New("no server is available right now")
+	}
+
+	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
+		return nil, nil, errors.New("no any partition")
+	}
+	var conns []redis.Conn
+	for i, h := range hosts {
+		if v, ok := cluster.nodes[h]; ok {
+			conn := v.connPool.Get()
+			conns = append(conns, conn)
+		} else {
+			hosts = append(hosts[:i], hosts[i+1:]...)
+		}
+	}
+	if len(conns) == 0 {
+		return nil, nil, errNoNodeForPartition
+	}
+	return conns, hosts, nil
 }
 
 func (self *Cluster) nextLookupEndpoint() (string, string, string) {
