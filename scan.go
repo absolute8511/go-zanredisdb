@@ -7,13 +7,14 @@ import (
 
 type ScanKey struct {
 	Namespace string
+	Type      string
 	Set       string
 	Count     int
 	Cursor    []byte
 	RawKey    []byte
 }
 
-func NewScanKey(ns string, set string, count int, cursor []byte) *ScanKey {
+func NewScanKey(ns, set, t string, count int, cursor []byte) *ScanKey {
 	var tmp bytes.Buffer
 	tmp.WriteString(ns)
 	tmp.WriteString(":")
@@ -25,14 +26,11 @@ func NewScanKey(ns string, set string, count int, cursor []byte) *ScanKey {
 	return &ScanKey{
 		Namespace: ns,
 		Set:       set,
+		Type:      t,
 		Count:     count,
 		Cursor:    cursor,
 		RawKey:    tmp.Bytes(),
 	}
-}
-
-func (self *ScanKey) ShardingKey() []byte {
-	return self.RawKey[len(self.Namespace)+1:]
 }
 
 func (self *ScanKey) String() string {

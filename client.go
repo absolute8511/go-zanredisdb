@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -61,6 +62,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 			continue
 		}
+		//		fmt.Println("###:", cmd, string(args[0].([]byte)))
 		rsp, err = DoRedisCmd(conn, cmd, args...)
 
 		if err != nil {
@@ -82,7 +84,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	return rsp, err
 }
 
-func (client *ZanRedisClient) DoScan(cmd, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	retry := uint32(0)
 	var err error
 	var rsps []interface{}
@@ -91,7 +93,6 @@ func (client *ZanRedisClient) DoScan(cmd, set string, count int, cursor []byte) 
 	var wg sync.WaitGroup
 	ro := client.conf.ReadTimeout / 2
 	connCursorMap := make(map[string]string)
-	var lock sync.Mutex
 	var hosts []string
 	if ro == 0 {
 		ro = time.Second
@@ -135,8 +136,14 @@ func (client *ZanRedisClient) DoScan(cmd, set string, count int, cursor []byte) 
 		for i, c := range conns {
 			wg.Add(1)
 			go func(index int, c redis.Conn) {
-				sk := NewScanKey(ns, set, count, cursor)
-				ay, err := redis.Values(c.Do(cmd, sk.RawKey))
+				cur := connCursorMap[hosts[index]]
+				var tmp bytes.Buffer
+				tmp.WriteString(ns)
+				tmp.WriteString(":")
+				tmp.WriteString(set)
+				tmp.WriteString(":")
+				tmp.WriteString(cur)
+				ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", count))
 				if err == nil &&
 					len(ay) == 2 {
 					originCursor := ay[0].([]byte)
@@ -145,10 +152,6 @@ func (client *ZanRedisClient) DoScan(cmd, set string, count int, cursor []byte) 
 						cursor = append(cursor, []byte(hosts[index])...)
 						cursor = append(cursor, []byte("@")...)
 						cursor = append(cursor, originCursor...)
-						lock.Lock()
-						connCursorMap[hosts[index]] = string(cursor)
-						lock.Unlock()
-
 						ay[0] = cursor
 					}
 					rsps[index] = ay
@@ -160,7 +163,7 @@ func (client *ZanRedisClient) DoScan(cmd, set string, count int, cursor []byte) 
 		if err != nil {
 			clusterChanged := client.cluster.MaybeTriggerCheckForError(err, 0)
 			if clusterChanged {
-				levelLog.Detailf("command err for cluster changed: %v, %v", cmd, ns)
+				levelLog.Detailf("advscan command err for cluster changed: %v, %v", tp, ns)
 				// we can retry for cluster error
 			} else if _, ok := err.(redis.Error); ok {
 				// other error from command reply no need retry
@@ -202,7 +205,12 @@ func (client *ZanRedisClient) DoScan(cmd, set string, count int, cursor []byte) 
 	return []byte(encodedCursor), keys, err
 }
 
-func (client *ZanRedisClient) DoScanChannel(cmd, set string, ch chan []byte) {
+func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte) {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Printf("get error. [err=%v]\n", err)
+		}
+	}()
 	retry := uint32(0)
 	var err error
 	var conns []redis.Conn
@@ -225,10 +233,22 @@ func (client *ZanRedisClient) DoScanChannel(cmd, set string, ch chan []byte) {
 		for _, c := range conns {
 			wg.Add(1)
 			go func(c redis.Conn) {
+				defer func() {
+					if err := recover(); err != nil {
+						fmt.Printf("get error. [err=%v]\n", err)
+					}
+				}()
 				cursor := []byte("")
+
+				var tmp bytes.Buffer
 				for {
-					sk := NewScanKey(ns, set, 10, cursor)
-					ay, err := redis.Values(c.Do(cmd, sk.RawKey))
+					defer tmp.Truncate(0)
+					tmp.WriteString(ns)
+					tmp.WriteString(":")
+					tmp.WriteString(set)
+					tmp.WriteString(":")
+					tmp.Write(cursor)
+					ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", 100))
 					if err != nil {
 						break
 					}
@@ -253,7 +273,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, set string, ch chan []byte) {
 		if err != nil {
 			clusterChanged := client.cluster.MaybeTriggerCheckForError(err, 0)
 			if clusterChanged {
-				levelLog.Detailf("command err for cluster changed: %v, %v", cmd, ns)
+				levelLog.Detailf("advscan command err for cluster changed: %v, %v", tp, ns)
 				// we can retry for cluster error
 			} else if _, ok := err.(redis.Error); ok {
 				// other error from command reply no need retry
@@ -285,43 +305,76 @@ func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	_, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
 	return err
 }
+func (client *ZanRedisClient) LLen(set string, key []byte) (int, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	return redis.Int(client.DoRedis("LLEN", pk.ShardingKey(), true, pk.RawKey))
+}
+
+func (client *ZanRedisClient) LRange(set string, key []byte, start, top int) ([]interface{}, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	return redis.MultiBulk(client.DoRedis("LRANGE", pk.ShardingKey(), true, pk.RawKey, start, top))
+}
+
+func (client *ZanRedisClient) ZCard(set string, key []byte) (int, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	return redis.Int(client.DoRedis("ZCARD", pk.ShardingKey(), true, pk.RawKey))
+}
+
+func (client *ZanRedisClient) ZRange(set string, key []byte, start, top int, withscores bool) ([]interface{}, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	if withscores {
+		return redis.MultiBulk(client.DoRedis("ZRANGE", pk.ShardingKey(), true, pk.RawKey, start, top, "WITHSCORES"))
+	} else {
+		return redis.MultiBulk(client.DoRedis("ZRANGE", pk.ShardingKey(), true, pk.RawKey, start, top))
+	}
+}
+
+func (client *ZanRedisClient) SMembers(set string, key []byte) ([]interface{}, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	return redis.MultiBulk(client.DoRedis("SMEMBERS", pk.ShardingKey(), true, pk.RawKey))
+}
+
+func (client *ZanRedisClient) HGetAll(set string, key []byte) ([]interface{}, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	return redis.MultiBulk(client.DoRedis("HGETALL", pk.ShardingKey(), true, pk.RawKey))
+}
+
+func (client *ZanRedisClient) AdvScanChannel(tp, set string, ch chan []byte) {
+	client.DoScanChannel("ADVSCAN", tp, set, ch)
+}
+
+func (client *ZanRedisClient) AdvScan(tp, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.DoScan("ADVSCAN", tp, set, count, cursor)
+}
 
 func (client *ZanRedisClient) KVScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("SCAN", set, ch)
+	client.DoScanChannel("SCAN", "KV", set, ch)
 }
 
 func (client *ZanRedisClient) KVScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("SCAN", set, count, cursor)
+	return client.DoScan("SCAN", "KV", set, count, cursor)
 }
 
 func (client *ZanRedisClient) HScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("HSCAN", set, ch)
+	client.DoScanChannel("HSCAN", "HASH", set, ch)
 }
 
 func (client *ZanRedisClient) HScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("HSCAN", set, count, cursor)
+	return client.DoScan("HSCAN", "HASH", set, count, cursor)
 }
 
 func (client *ZanRedisClient) SScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("SSCAN", set, ch)
+	client.DoScanChannel("SSCAN", "SET", set, ch)
 }
 
 func (client *ZanRedisClient) SScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("SSCAN", set, count, cursor)
+	return client.DoScan("SSCAN", "SET", set, count, cursor)
 }
 
 func (client *ZanRedisClient) ZScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("ZSCAN", set, ch)
+	client.DoScanChannel("ZSCAN", "ZSET", set, ch)
 }
 
 func (client *ZanRedisClient) ZScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("ZSCAN", set, count, cursor)
-}
-
-func (client *ZanRedisClient) LScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("LSCAN", set, ch)
-}
-
-func (client *ZanRedisClient) LScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("LSCAN", set, count, cursor)
+	return client.DoScan("ZSCAN", "ZSET", set, count, cursor)
 }
