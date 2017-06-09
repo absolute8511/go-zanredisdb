@@ -230,6 +230,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte)
 			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 			continue
 		}
+
 		for _, c := range conns {
 			wg.Add(1)
 			go func(c redis.Conn) {
@@ -242,7 +243,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte)
 
 				var tmp bytes.Buffer
 				for {
-					defer tmp.Truncate(0)
+					tmp.Truncate(0)
 					tmp.WriteString(ns)
 					tmp.WriteString(":")
 					tmp.WriteString(set)
@@ -250,9 +251,11 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte)
 					tmp.Write(cursor)
 					ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", 100))
 					if err != nil {
+						fmt.Printf("get error when DoScanChannel. [err=%v]\n", err)
 						break
 					}
 					if len(ay) != 2 {
+						fmt.Printf("response length is not 2 when DoScanChannel. [len=%d]\n", len(ay))
 						break
 					}
 
@@ -305,6 +308,12 @@ func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	_, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
 	return err
 }
+
+func (self *ZanRedisClient) KVSetnx(set string, key []byte, value []byte) (int, error) {
+	pk := NewPKey(self.conf.Namespace, set, key)
+	return redis.Int(self.DoRedis("setnx", pk.ShardingKey(), true, pk.RawKey, value))
+}
+
 func (client *ZanRedisClient) LLen(set string, key []byte) (int, error) {
 	pk := NewPKey(client.conf.Namespace, set, key)
 	return redis.Int(client.DoRedis("LLEN", pk.ShardingKey(), true, pk.RawKey))
