@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -62,7 +61,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 			sleeped += MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry))
 			continue
 		}
-		//		fmt.Println("###:", cmd, string(args[0].([]byte)))
+
 		rsp, err = DoRedisCmd(conn, cmd, args...)
 
 		if err != nil {
@@ -208,7 +207,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Printf("get error. [err=%v]\n", err)
+			levelLog.Errorf("get error. [err=%v]\n", err)
 		}
 	}()
 	retry := uint32(0)
@@ -236,7 +235,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte)
 			go func(c redis.Conn) {
 				defer func() {
 					if err := recover(); err != nil {
-						fmt.Printf("get error. [err=%v]\n", err)
+						levelLog.Errorf("get error. [err=%v]\n", err)
 					}
 				}()
 				cursor := []byte("")
@@ -251,11 +250,11 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte)
 					tmp.Write(cursor)
 					ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", 100))
 					if err != nil {
-						fmt.Printf("get error when DoScanChannel. [err=%v]\n", err)
+						levelLog.Errorf("get error when DoScanChannel. [err=%v]\n", err)
 						break
 					}
 					if len(ay) != 2 {
-						fmt.Printf("response length is not 2 when DoScanChannel. [len=%d]\n", len(ay))
+						levelLog.Errorf("response length is not 2 when DoScanChannel. [len=%d]\n", len(ay))
 						break
 					}
 
