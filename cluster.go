@@ -339,10 +339,13 @@ func (self *Cluster) tend() {
 			newNode := &RedisHost{addr: replica}
 			newNode.connPool = &redis.Pool{
 				MaxIdle:      10,
-				MaxActive:    100,
+				MaxActive:    int(self.conf.MaxActive),
 				IdleTimeout:  120 * time.Second,
 				TestOnBorrow: testF,
 				Dial:         func() (redis.Conn, error) { return self.dialF(newNode.addr) },
+			}
+			if self.conf.IdleTimeout > time.Second {
+				newNode.connPool.IdleTimeout = self.conf.IdleTimeout
 			}
 			levelLog.Infof("host:%v is available and come into service", newNode.addr)
 			self.nodes[replica] = newNode

@@ -39,6 +39,8 @@ type Conf struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+	MaxActive    int32
 	TendInterval int64
 	Namespace    string
 	Password     string
