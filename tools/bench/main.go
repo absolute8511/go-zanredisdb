@@ -23,6 +23,8 @@ var tests = flag.String("t", "set,get,randget,del", "only run the comma separate
 var primaryKeyCnt = flag.Int("pkn", 100, "primary key count for hash,list,set,zset")
 var namespace = flag.String("namespace", "default", "the prefix namespace")
 var table = flag.String("table", "test", "the table to write")
+var maxExpireSecs = flag.Int("maxExpire", 60, "max expire seconds to be allowed with setex")
+var minExpireSecs = flag.Int("minExpire", 10, "min expire seconds to be allowed with setex")
 
 var wg sync.WaitGroup
 var loop int = 0
@@ -65,7 +67,7 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 		go func(clientIndex int) {
 			var err error
 			conf := &zanredisdb.Conf{
-				DialTimeout:  time.Second * 5,
+				DialTimeout:  time.Second * 15,
 				ReadTimeout:  0,
 				WriteTimeout: 0,
 				TendInterval: 10,
@@ -170,6 +172,48 @@ func benchSet() {
 	bench("set", f)
 }
 
+func benchSetEx() {
+	atomic.StoreInt64(&kvSetBase, 0)
+
+	valueSample := make([]byte, *valueSize)
+	for i := 0; i < len(valueSample); i++ {
+		valueSample[i] = byte(i % 255)
+	}
+	magicIdentify := make([]byte, 9+3+3)
+	for i := 0; i < len(magicIdentify); i++ {
+		if i < 3 || i > len(magicIdentify)-3 {
+			magicIdentify[i] = 0
+		} else {
+			magicIdentify[i] = byte(i % 3)
+		}
+	}
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		value := make([]byte, *valueSize)
+		copy(value, valueSample)
+		n := atomic.AddInt64(&kvSetBase, 1)
+		ttl := rand.Int31n(int32(*maxExpireSecs-*minExpireSecs)) + int32(*minExpireSecs)
+		tmp := fmt.Sprintf("%010d-%d-%s", int(n), ttl, time.Now().String())
+		ts := time.Now().String()
+		index := 0
+		copy(value[index:], magicIdentify)
+		index += len(magicIdentify)
+		if index < *valueSize {
+			copy(value[index:], ts)
+			index += len(ts)
+		}
+		if index < *valueSize {
+			copy(value[index:], tmp)
+			index += len(tmp)
+		}
+		if *valueSize > len(magicIdentify) {
+			copy(value[len(value)-len(magicIdentify):], magicIdentify)
+		}
+		return doCommand(c, "SETEX", tmp, ttl, value)
+	}
+
+	bench("setex", f)
+}
+
 func benchGet() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := atomic.AddInt64(&kvGetBase, 1)
@@ -223,6 +267,8 @@ func main() {
 			switch strings.ToLower(s) {
 			case "set":
 				benchSet()
+			case "setex":
+				benchSetEx()
 			case "get":
 				benchGet()
 			case "randget":
