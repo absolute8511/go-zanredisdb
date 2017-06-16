@@ -80,7 +80,7 @@ func NewCluster(conf *Conf) *Cluster {
 	copy(self.LookupList, conf.LookupList)
 
 	self.dialF = func(addr string) (redis.Conn, error) {
-		return redis.Dial("tcp", addr, redis.DialConnectTimeout(conf.DialTimeout*time.Second),
+		return redis.Dial("tcp", addr, redis.DialConnectTimeout(conf.DialTimeout),
 			redis.DialReadTimeout(conf.ReadTimeout),
 			redis.DialWriteTimeout(conf.WriteTimeout),
 			redis.DialPassword(conf.Password),
