@@ -217,7 +217,8 @@ func benchSetEx() {
 func benchGet() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := atomic.AddInt64(&kvGetBase, 1)
-		return doCommand(c, "GET", n)
+		k := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "GET", k)
 	}
 	bench("get", f)
 }
@@ -225,7 +226,8 @@ func benchGet() {
 func benchRandGet() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := rand.Int() % *number
-		return doCommand(c, "GET", n)
+		k := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "GET", k)
 	}
 	bench("randget", f)
 }
@@ -233,7 +235,8 @@ func benchRandGet() {
 func benchDel() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := atomic.AddInt64(&kvDelBase, 1)
-		return doCommand(c, "DEL", n)
+		k := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "DEL", k)
 	}
 
 	bench("del", f)
