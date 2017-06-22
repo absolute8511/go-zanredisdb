@@ -28,6 +28,7 @@ var minExpireSecs = flag.Int("minExpire", 10, "min expire seconds to be allowed 
 
 var wg sync.WaitGroup
 var loop int = 0
+var latencyDistribute []int64
 
 func doCommand(client *zanredisdb.ZanRedisClient, cmd string, args ...interface{}) error {
 	v := args[0]
@@ -47,11 +48,22 @@ func doCommand(client *zanredisdb.ZanRedisClient, cmd string, args ...interface{
 		sharding = *table + ":" + strconv.Itoa(int(vt))
 		args[0] = prefix + strconv.Itoa(int(vt))
 	}
+	s := time.Now()
 	_, err := client.DoRedis(strings.ToUpper(cmd), []byte(sharding), true, args...)
 	if err != nil {
 		fmt.Printf("do %s (%v) error %s\n", cmd, args[0], err.Error())
 		return err
 	}
+	cost := time.Since(s).Nanoseconds()
+	index := cost / 1000 / 1000
+	if index < 1000 {
+		index = index / 100
+	} else if index < 10000 {
+		index = 9 + index/1000
+	} else {
+		index = 19
+	}
+	atomic.AddInt64(&latencyDistribute[index], 1)
 	return nil
 }
 
@@ -127,6 +139,9 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 		atomic.LoadInt64(&errCnt),
 		*number,
 	)
+	for i, v := range latencyDistribute {
+		fmt.Printf("latency interval %d: %v\n", i, v)
+	}
 }
 
 var kvSetBase int64 = 0
@@ -282,4 +297,8 @@ func main() {
 		}
 		println("")
 	}
+}
+
+func init() {
+	latencyDistribute = make([]int64, 32)
 }
