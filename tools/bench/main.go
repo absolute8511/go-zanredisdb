@@ -56,12 +56,14 @@ func doCommand(client *zanredisdb.ZanRedisClient, cmd string, args ...interface{
 	}
 	cost := time.Since(s).Nanoseconds()
 	index := cost / 1000 / 1000
-	if index < 1000 {
-		index = index / 100
+	if index < 100 {
+		index = index / 10
+	} else if index < 1000 {
+		index = 9 + index/100
 	} else if index < 10000 {
-		index = 9 + index/1000
+		index = 19 + index/1000
 	} else {
-		index = 19
+		index = 29
 	}
 	atomic.AddInt64(&latencyDistribute[index], 1)
 	return nil
@@ -140,6 +142,13 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 		*number,
 	)
 	for i, v := range latencyDistribute {
+		if i == 0 {
+			fmt.Printf("latency below 100ms\n")
+		} else if i == 10 {
+			fmt.Printf("latency between 100ms ~ 999ms\n")
+		} else if i == 20 {
+			fmt.Printf("latency above 1s\n")
+		}
 		fmt.Printf("latency interval %d: %v\n", i, v)
 	}
 }
