@@ -116,6 +116,12 @@ func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) b
 	return false
 }
 
+func (self *Cluster) GetPartitionNum() int {
+	defer self.Unlock()
+	self.Lock()
+	return self.parts.PNum
+}
+
 func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.Pool, error) {
 	self.Lock()
 	defer self.Unlock()

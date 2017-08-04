@@ -1,8 +1,11 @@
 package zanredisdb
 
 import (
-	"github.com/garyburd/redigo/redis"
+	"fmt"
+	"sync"
 	"time"
+
+	"github.com/garyburd/redigo/redis"
 )
 
 const (
@@ -92,4 +95,66 @@ func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	pk := NewPKey(self.conf.Namespace, set, key)
 	_, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
 	return err
+}
+
+func (self *ZanRedisClient) KVMGet(pKeys ...*PKey) ([][]byte, error) {
+	for _, pk := range pKeys {
+		if pk.Namespace != self.conf.Namespace {
+			return nil, fmt.Errorf("invalid Namespace:%s", pk.Namespace)
+		}
+	}
+
+	partNum := self.cluster.GetPartitionNum()
+	keysPart := make([]int, len(pKeys))
+
+	type packedKeys struct {
+		shardingKey []byte
+		rawKeys     []interface{}
+	}
+
+	partitionKeys := make([]packedKeys, partNum)
+
+	for i, pk := range pKeys {
+		partID := GetHashedPartitionID(pk.ShardingKey(), partNum)
+		keysPart[i] = partID
+
+		partitionKeys[partID].rawKeys = append(partitionKeys[partID].rawKeys, pk.RawKey)
+		partitionKeys[partID].shardingKey = pk.ShardingKey()
+	}
+
+	partitionValues := make([][][]byte, partNum)
+
+	var lock sync.Mutex
+	wg := sync.WaitGroup{}
+	for partID, keys := range partitionKeys {
+		wg.Add(1)
+		go func(keys packedKeys, partID int) {
+			defer wg.Done()
+			vals, _ := redis.ByteSlices(self.DoRedis("MGET", keys.shardingKey,
+				true, keys.rawKeys...))
+			lock.Lock()
+			partitionValues[partID] = vals
+			lock.Unlock()
+
+		}(keys, partID)
+	}
+	wg.Wait()
+
+	resultVals := make([][]byte, len(pKeys))
+	partPos := make([]int, partNum)
+
+	for i, partID := range keysPart {
+		vals := partitionValues[partID]
+		pos := partPos[partID]
+
+		if vals == nil || pos >= len(vals) {
+			resultVals[i] = nil
+		} else {
+			resultVals[i] = vals[pos]
+		}
+
+		partPos[partID] = pos + 1
+	}
+
+	return resultVals, nil
 }
