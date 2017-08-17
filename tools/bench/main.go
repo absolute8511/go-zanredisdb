@@ -403,10 +403,10 @@ func benchHset() {
 		if *valueSize > len(magicIdentify) {
 			copy(value[len(value)-len(magicIdentify):], magicIdentify)
 		}
-		return doCommand(c, "HSET", "myhashkey"+tmp, subkey, value, "intv", subkey, "strv", tmp)
+		return doCommand(c, "HMSET", "myhashkey"+tmp, subkey, value, "intv", subkey, "strv", tmp)
 	}
 
-	bench("hset", f)
+	bench("hmset", f)
 }
 
 func benchHGet() {
