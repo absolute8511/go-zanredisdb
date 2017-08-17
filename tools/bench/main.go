@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/absolute8511/go-zanredisdb"
 	"math/rand"
 	"runtime"
 	"strconv"
@@ -11,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/absolute8511/go-zanredisdb"
 )
 
 var ip = flag.String("ip", "127.0.0.1", "pd server ip")
@@ -19,7 +20,7 @@ var number = flag.Int("n", 1000, "request number")
 var clients = flag.Int("c", 10, "number of clients")
 var round = flag.Int("r", 1, "benchmark round number")
 var valueSize = flag.Int("vsize", 100, "kv value size")
-var tests = flag.String("t", "set,get,randget,del", "only run the comma separated list of tests")
+var tests = flag.String("t", "set,get,randget,del,lpush,lrange,lpop,hset,randhget,hget,hdel", "only run the comma separated list of tests")
 var primaryKeyCnt = flag.Int("pkn", 100, "primary key count for hash,list,set,zset")
 var namespace = flag.String("namespace", "default", "the prefix namespace")
 var table = flag.String("table", "test", "the table to write")
@@ -266,6 +267,190 @@ func benchDel() {
 	bench("del", f)
 }
 
+var listPushBase int64
+var listRange10Base int64
+var listRange50Base int64
+var listRange100Base int64
+var listPopBase int64
+
+func benchPushList() {
+	valueSample := make([]byte, *valueSize)
+	for i := 0; i < len(valueSample); i++ {
+		valueSample[i] = byte(i % 255)
+	}
+	magicIdentify := make([]byte, 9+3+3)
+	for i := 0; i < len(magicIdentify); i++ {
+		if i < 3 || i > len(magicIdentify)-3 {
+			magicIdentify[i] = 0
+		} else {
+			magicIdentify[i] = byte(i % 3)
+		}
+	}
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		value := make([]byte, *valueSize)
+		copy(value, valueSample)
+		n := atomic.AddInt64(&listPushBase, 1) % int64(*primaryKeyCnt)
+		tmp := fmt.Sprintf("%010d", int(n))
+		ts := time.Now().String()
+		index := 0
+		copy(value[index:], magicIdentify)
+		index += len(magicIdentify)
+		if index < *valueSize {
+			copy(value[index:], ts)
+			index += len(ts)
+		}
+		if index < *valueSize {
+			copy(value[index:], tmp)
+			index += len(tmp)
+		}
+		if *valueSize > len(magicIdentify) {
+			copy(value[len(value)-len(magicIdentify):], magicIdentify)
+		}
+		return doCommand(c, "RPUSH", "mytestlist"+tmp, value)
+	}
+
+	bench("rpush", f)
+}
+
+func benchRangeList10() {
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&listRange10Base, 1) % int64(*primaryKeyCnt)
+		tmp := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "LRANGE", "mytestlist"+tmp, 0, 10)
+	}
+
+	bench("lrange10", f)
+}
+
+func benchRangeList50() {
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&listRange50Base, 1) % int64(*primaryKeyCnt)
+		if n%10 != 0 {
+			return nil
+		}
+		tmp := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "LRANGE", "mytestlist"+tmp, 0, 50)
+	}
+
+	bench("lrange50", f)
+}
+
+func benchRangeList100() {
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&listRange100Base, 1) % int64(*primaryKeyCnt)
+		if n%10 != 0 {
+			return nil
+		}
+		tmp := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "LRANGE", "mytestlist"+tmp, 0, 100)
+	}
+
+	bench("lrange100", f)
+}
+
+func benchPopList() {
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&listPopBase, 1) % int64(*primaryKeyCnt)
+		tmp := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "LPOP", "mytestlist"+tmp)
+	}
+
+	bench("lpop", f)
+}
+
+var hashPKBase int64
+var hashSetBase int64
+var hashIncrBase int64
+var hashGetBase int64
+var hashDelBase int64
+
+func benchHset() {
+	valueSample := make([]byte, *valueSize)
+	for i := 0; i < len(valueSample); i++ {
+		valueSample[i] = byte(i % 255)
+	}
+	magicIdentify := make([]byte, 9+3+3)
+	for i := 0; i < len(magicIdentify); i++ {
+		if i < 3 || i > len(magicIdentify)-3 {
+			magicIdentify[i] = 0
+		} else {
+			magicIdentify[i] = byte(i % 3)
+		}
+	}
+	atomic.StoreInt64(&hashPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		value := make([]byte, *valueSize)
+		copy(value, valueSample)
+
+		n := atomic.AddInt64(&hashSetBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		ts := time.Now().String()
+
+		index := 0
+		copy(value[index:], magicIdentify)
+		index += len(magicIdentify)
+		if index < *valueSize {
+			copy(value[index:], ts)
+			index += len(ts)
+		}
+		if index < *valueSize {
+			copy(value[index:], tmp)
+			index += len(tmp)
+		}
+		if *valueSize > len(magicIdentify) {
+			copy(value[len(value)-len(magicIdentify):], magicIdentify)
+		}
+		return doCommand(c, "HSET", "myhashkey"+tmp, subkey, value, "intv", subkey, "strv", tmp)
+	}
+
+	bench("hset", f)
+}
+
+func benchHGet() {
+	atomic.StoreInt64(&hashPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&hashGetBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(n))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "HGET", "myhashkey"+tmp, subkey)
+	}
+
+	bench("hget", f)
+}
+
+func benchHRandGet() {
+	atomic.StoreInt64(&hashPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := int64(rand.Int() % *number)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(n))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "HGET", "myhashkey"+tmp, subkey)
+	}
+
+	bench("hrandget", f)
+}
+
+func benchHDel() {
+	atomic.StoreInt64(&hashPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&hashDelBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(n))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "HDEL", "myhashkey"+tmp, subkey)
+	}
+
+	bench("hdel", f)
+}
+
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -302,6 +487,22 @@ func main() {
 				benchRandGet()
 			case "del":
 				benchDel()
+			case "lpush":
+				benchPushList()
+			case "lrange":
+				benchRangeList10()
+				benchRangeList50()
+				benchRangeList100()
+			case "lpop":
+				benchPopList()
+			case "hset":
+				benchHset()
+			case "hget":
+				benchHGet()
+			case "randhget":
+				benchHRandGet()
+			case "hdel":
+				benchHDel()
 			}
 		}
 		println("")
