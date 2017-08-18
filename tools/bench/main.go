@@ -20,7 +20,7 @@ var number = flag.Int("n", 1000, "request number")
 var clients = flag.Int("c", 10, "number of clients")
 var round = flag.Int("r", 1, "benchmark round number")
 var valueSize = flag.Int("vsize", 100, "kv value size")
-var tests = flag.String("t", "set,get,randget,del,lpush,lrange,lpop,hset,randhget,hget,hdel", "only run the comma separated list of tests")
+var tests = flag.String("t", "set,get,randget,del,lpush,rpush,lrange,lpop,rpop,hset,randhget,hget,hdel", "only run the comma separated list of tests")
 var primaryKeyCnt = flag.Int("pkn", 100, "primary key count for hash,list,set,zset")
 var namespace = flag.String("namespace", "default", "the prefix namespace")
 var table = flag.String("table", "test", "the table to write")
@@ -273,7 +273,13 @@ var listRange50Base int64
 var listRange100Base int64
 var listPopBase int64
 
-func benchPushList() {
+func benchLPushList() {
+	benchPushList("lpush")
+}
+func benchRPushList() {
+	benchPushList("rpush")
+}
+func benchPushList(pushCmd string) {
 	valueSample := make([]byte, *valueSize)
 	for i := 0; i < len(valueSample); i++ {
 		valueSample[i] = byte(i % 255)
@@ -306,10 +312,10 @@ func benchPushList() {
 		if *valueSize > len(magicIdentify) {
 			copy(value[len(value)-len(magicIdentify):], magicIdentify)
 		}
-		return doCommand(c, "RPUSH", "mytestlist"+tmp, value)
+		return doCommand(c, pushCmd, "mytestlist"+tmp, value)
 	}
 
-	bench("rpush", f)
+	bench(pushCmd, f)
 }
 
 func benchRangeList10() {
@@ -348,7 +354,17 @@ func benchRangeList100() {
 	bench("lrange100", f)
 }
 
-func benchPopList() {
+func benchRPopList() {
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&listPopBase, 1) % int64(*primaryKeyCnt)
+		tmp := fmt.Sprintf("%010d", int(n))
+		return doCommand(c, "RPOP", "mytestlist"+tmp)
+	}
+
+	bench("rpop", f)
+}
+
+func benchLPopList() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := atomic.AddInt64(&listPopBase, 1) % int64(*primaryKeyCnt)
 		tmp := fmt.Sprintf("%010d", int(n))
@@ -488,13 +504,17 @@ func main() {
 			case "del":
 				benchDel()
 			case "lpush":
-				benchPushList()
+				benchLPushList()
+			case "rpush":
+				benchRPushList()
 			case "lrange":
 				benchRangeList10()
 				benchRangeList50()
 				benchRangeList100()
 			case "lpop":
-				benchPopList()
+				benchLPopList()
+			case "rpop":
+				benchRPopList()
 			case "hset":
 				benchHset()
 			case "hget":
