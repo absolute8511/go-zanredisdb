@@ -165,6 +165,45 @@ func (self *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 	return conn, nil
 }
 
+func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, []string, error) {
+	if len(cluster.nodes) == 0 {
+		return nil, nil, errors.New("no server is available right now")
+	}
+	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
+		return nil, nil, errors.New("no any partition")
+	}
+	var conns []redis.Conn
+	for i, h := range hosts {
+		if v, ok := cluster.nodes[h]; ok {
+			conn := v.connPool.Get()
+			conns = append(conns, conn)
+		} else {
+			hosts = append(hosts[:i], hosts[i+1:]...)
+		}
+	}
+	if len(conns) == 0 {
+		return nil, nil, errNoNodeForPartition
+	}
+	return conns, hosts, nil
+}
+
+func (cluster *Cluster) GetConns() ([]redis.Conn, []string, error) {
+	cluster.Lock()
+	defer cluster.Unlock()
+
+	var hosts []string
+	for _, p := range cluster.parts.PList {
+		hosts = append(hosts, p.Leader)
+	}
+	return cluster.getConnsByHosts(hosts)
+}
+
+func (cluster *Cluster) GetConnsByHosts(hosts []string) ([]redis.Conn, []string, error) {
+	cluster.Lock()
+	defer cluster.Unlock()
+	return cluster.getConnsByHosts(hosts)
+}
+
 func (self *Cluster) nextLookupEndpoint() (string, string, string) {
 	self.lookupMtx.RLock()
 	if self.lookupIndex >= len(self.LookupList) {
