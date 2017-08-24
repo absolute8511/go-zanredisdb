@@ -66,7 +66,7 @@ func checkList(tryFix bool, c *zanredisdb.ZanRedisClient) {
 			}
 		}
 		if cnt%1000 == 0 {
-			fmt.Printf("%d", cnt)
+			fmt.Printf("%d(%d)", cnt, wrongKeys)
 		}
 		rsp, err := doCommand(c, "llen", k)
 		listLen, err := redis.Int64(rsp, err)
