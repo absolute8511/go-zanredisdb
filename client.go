@@ -166,48 +166,48 @@ func (self *ZanRedisClient) KVSetNX(set string, key []byte, value []byte) (int, 
 	return redis.Int(self.DoRedis("setnx", pk.ShardingKey(), true, pk.RawKey, value))
 }
 
-func (client *ZanRedisClient) FullScanChannel(tp, set string) chan interface{} {
-	return client.DoFullScanChannel(tp, set)
+func (client *ZanRedisClient) FullScanChannel(tp, set string, stopC chan struct{}) chan interface{} {
+	return client.DoFullScanChannel(tp, set, stopC)
 }
 
 func (client *ZanRedisClient) FullScan(tp, set string, count int, cursor []byte) ([]byte, []interface{}, error) {
 	return client.DoFullScan("FULLSCAN", tp, set, count, cursor)
 }
 
-func (client *ZanRedisClient) AdvScanChannel(tp, set string) chan []byte {
-	return client.DoScanChannel("ADVSCAN", tp, set)
+func (client *ZanRedisClient) AdvScanChannel(tp, set string, stopC chan struct{}) chan []byte {
+	return client.DoScanChannel("ADVSCAN", tp, set, stopC)
 }
 
 func (client *ZanRedisClient) AdvScan(tp, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("ADVSCAN", tp, set, count, cursor)
 }
 
-func (client *ZanRedisClient) KVScanChannel(set string) chan []byte {
-	return client.DoScanChannel("SCAN", "KV", set)
+func (client *ZanRedisClient) KVScanChannel(set string, stopC chan struct{}) chan []byte {
+	return client.DoScanChannel("SCAN", "KV", set, stopC)
 }
 
 func (client *ZanRedisClient) KVScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("SCAN", "KV", set, count, cursor)
 }
 
-func (client *ZanRedisClient) HScanChannel(set string) chan []byte {
-	return client.DoScanChannel("HSCAN", "HASH", set)
+func (client *ZanRedisClient) HScanChannel(set string, stopC chan struct{}) chan []byte {
+	return client.DoScanChannel("HSCAN", "HASH", set, stopC)
 }
 
 func (client *ZanRedisClient) HScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("HSCAN", "HASH", set, count, cursor)
 }
 
-func (client *ZanRedisClient) SScanChannel(set string) chan []byte {
-	return client.DoScanChannel("SSCAN", "SET", set)
+func (client *ZanRedisClient) SScanChannel(set string, stopC chan struct{}) chan []byte {
+	return client.DoScanChannel("SSCAN", "SET", set, stopC)
 }
 
 func (client *ZanRedisClient) SScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("SSCAN", "SET", set, count, cursor)
 }
 
-func (client *ZanRedisClient) ZScanChannel(set string) chan []byte {
-	return client.DoScanChannel("ZSCAN", "ZSET", set)
+func (client *ZanRedisClient) ZScanChannel(set string, stopC chan struct{}) chan []byte {
+	return client.DoScanChannel("ZSCAN", "ZSET", set, stopC)
 }
 
 func (client *ZanRedisClient) ZScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
@@ -318,7 +318,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 	return []byte(encodedCursor), keys, err
 }
 
-func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string) chan []byte {
+func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, stopC chan struct{}) chan []byte {
 	ch := make(chan []byte, 10)
 	go func() {
 		defer func() {
@@ -336,6 +336,11 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string) chan []byte {
 			conns, _, err = client.cluster.GetConns()
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
+				select {
+				case <-stopC:
+					break
+				default:
+				}
 				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 				continue
 			}
@@ -372,7 +377,11 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string) chan []byte {
 						cursor = ay[0].([]byte)
 						for _, res := range ay[1].([]interface{}) {
 							val := res.([]byte)
-							ch <- val
+							select {
+							case <-stopC:
+								break
+							case ch <- val:
+							}
 						}
 
 						if len(cursor) == 0 {
@@ -388,7 +397,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string) chan []byte {
 	return ch
 }
 
-func (client *ZanRedisClient) DoFullScanChannel(tp, set string) chan interface{} {
+func (client *ZanRedisClient) DoFullScanChannel(tp, set string, stopC chan struct{}) chan interface{} {
 	ch := make(chan interface{}, 10)
 	go func() {
 		defer func() {
@@ -406,6 +415,11 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string) chan interface{}
 			conns, _, err = client.cluster.GetConns()
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
+				select {
+				case <-stopC:
+					break
+				default:
+				}
 				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 				continue
 			}
@@ -447,7 +461,11 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string) chan interface{}
 							break
 						}
 
-						ch <- a
+						select {
+						case <-stopC:
+							break
+						case ch <- a:
+						}
 
 						if len(cursor) == 0 {
 							break

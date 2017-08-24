@@ -47,7 +47,9 @@ func doCommand(client *zanredisdb.ZanRedisClient, cmd string, args ...interface{
 }
 
 func checkList(tryFix bool, c *zanredisdb.ZanRedisClient) {
-	ch := c.AdvScanChannel("list", *table)
+	stopC := make(chan struct{})
+	defer close(stopC)
+	ch := c.AdvScanChannel("list", *table, stopC)
 	cnt := int64(0)
 	wrongKeys := int64(0)
 	defer func() {
