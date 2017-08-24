@@ -166,48 +166,48 @@ func (self *ZanRedisClient) KVSetNX(set string, key []byte, value []byte) (int, 
 	return redis.Int(self.DoRedis("setnx", pk.ShardingKey(), true, pk.RawKey, value))
 }
 
-func (client *ZanRedisClient) FullScanChannel(tp, set string, ch chan interface{}) {
-	client.DoFullScanChannel(tp, set, ch)
+func (client *ZanRedisClient) FullScanChannel(tp, set string) chan interface{} {
+	return client.DoFullScanChannel(tp, set)
 }
 
 func (client *ZanRedisClient) FullScan(tp, set string, count int, cursor []byte) ([]byte, []interface{}, error) {
 	return client.DoFullScan("FULLSCAN", tp, set, count, cursor)
 }
 
-func (client *ZanRedisClient) AdvScanChannel(tp, set string, ch chan []byte) {
-	client.DoScanChannel("ADVSCAN", tp, set, ch)
+func (client *ZanRedisClient) AdvScanChannel(tp, set string) chan []byte {
+	return client.DoScanChannel("ADVSCAN", tp, set)
 }
 
 func (client *ZanRedisClient) AdvScan(tp, set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("ADVSCAN", tp, set, count, cursor)
 }
 
-func (client *ZanRedisClient) KVScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("SCAN", "KV", set, ch)
+func (client *ZanRedisClient) KVScanChannel(set string) chan []byte {
+	return client.DoScanChannel("SCAN", "KV", set)
 }
 
 func (client *ZanRedisClient) KVScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("SCAN", "KV", set, count, cursor)
 }
 
-func (client *ZanRedisClient) HScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("HSCAN", "HASH", set, ch)
+func (client *ZanRedisClient) HScanChannel(set string) chan []byte {
+	return client.DoScanChannel("HSCAN", "HASH", set)
 }
 
 func (client *ZanRedisClient) HScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("HSCAN", "HASH", set, count, cursor)
 }
 
-func (client *ZanRedisClient) SScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("SSCAN", "SET", set, ch)
+func (client *ZanRedisClient) SScanChannel(set string) chan []byte {
+	return client.DoScanChannel("SSCAN", "SET", set)
 }
 
 func (client *ZanRedisClient) SScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
 	return client.DoScan("SSCAN", "SET", set, count, cursor)
 }
 
-func (client *ZanRedisClient) ZScanChannel(set string, ch chan []byte) {
-	client.DoScanChannel("ZSCAN", "ZSET", set, ch)
+func (client *ZanRedisClient) ZScanChannel(set string) chan []byte {
+	return client.DoScanChannel("ZSCAN", "ZSET", set)
 }
 
 func (client *ZanRedisClient) ZScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
@@ -318,140 +318,148 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 	return []byte(encodedCursor), keys, err
 }
 
-func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, ch chan []byte) {
-	defer func() {
-		if err := recover(); err != nil {
-			levelLog.Errorf("scan panic error. [err=%v]\n", err)
+func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string) chan []byte {
+	ch := make(chan []byte, 10)
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				levelLog.Errorf("scan panic error. [err=%v]\n", err)
+			}
+			close(ch)
+		}()
+		retry := uint32(0)
+		var err error
+		var conns []redis.Conn
+		ns := client.conf.Namespace
+		for retry < 3 {
+			retry++
+			conns, _, err = client.cluster.GetConns()
+			if err != nil {
+				client.cluster.MaybeTriggerCheckForError(err, 0)
+				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+				continue
+			}
+			var wg sync.WaitGroup
+			for _, c := range conns {
+				wg.Add(1)
+				go func(c redis.Conn) {
+					defer func() {
+						wg.Done()
+						if err := recover(); err != nil {
+							levelLog.Errorf("scan panic error. [err=%v]\n", err)
+						}
+					}()
+					cursor := []byte("")
+
+					var tmp bytes.Buffer
+					for {
+						tmp.Truncate(0)
+						tmp.WriteString(ns)
+						tmp.WriteString(":")
+						tmp.WriteString(set)
+						tmp.WriteString(":")
+						tmp.Write(cursor)
+						ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", 100))
+						if err != nil {
+							levelLog.Errorf("get error when DoScanChannel. [err=%v]\n", err)
+							break
+						}
+						if len(ay) != 2 {
+							levelLog.Errorf("response length is not 2 when DoScanChannel. [len=%d]\n", len(ay))
+							break
+						}
+
+						cursor = ay[0].([]byte)
+						for _, res := range ay[1].([]interface{}) {
+							val := res.([]byte)
+							ch <- val
+						}
+
+						if len(cursor) == 0 {
+							break
+						}
+					}
+				}(c)
+			}
+			wg.Wait()
+			break
 		}
 	}()
-	retry := uint32(0)
-	var err error
-	var conns []redis.Conn
-	var wg sync.WaitGroup
-	ns := client.conf.Namespace
-	for retry < 3 {
-		retry++
-		conns, _, err = client.cluster.GetConns()
-		if err != nil {
-			client.cluster.MaybeTriggerCheckForError(err, 0)
-			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
-			continue
-		}
-		for _, c := range conns {
-			wg.Add(1)
-			go func(c redis.Conn) {
-				defer func() {
-					wg.Done()
-					if err := recover(); err != nil {
-						levelLog.Errorf("scan panic error. [err=%v]\n", err)
-					}
-				}()
-				cursor := []byte("")
-
-				var tmp bytes.Buffer
-				for {
-					tmp.Truncate(0)
-					tmp.WriteString(ns)
-					tmp.WriteString(":")
-					tmp.WriteString(set)
-					tmp.WriteString(":")
-					tmp.Write(cursor)
-					ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", 100))
-					if err != nil {
-						levelLog.Errorf("get error when DoScanChannel. [err=%v]\n", err)
-						break
-					}
-					if len(ay) != 2 {
-						levelLog.Errorf("response length is not 2 when DoScanChannel. [len=%d]\n", len(ay))
-						break
-					}
-
-					cursor = ay[0].([]byte)
-					for _, res := range ay[1].([]interface{}) {
-						val := res.([]byte)
-						ch <- val
-					}
-
-					if len(cursor) == 0 {
-						break
-					}
-				}
-			}(c)
-		}
-		wg.Wait()
-		break
-	}
-	close(ch)
+	return ch
 }
 
-func (client *ZanRedisClient) DoFullScanChannel(tp, set string, ch chan interface{}) {
-	defer func() {
-		if err := recover(); err != nil {
-			levelLog.Errorf("scan error. [err=%v]\n", err)
+func (client *ZanRedisClient) DoFullScanChannel(tp, set string) chan interface{} {
+	ch := make(chan interface{}, 10)
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				levelLog.Errorf("scan error. [err=%v]\n", err)
+			}
+			close(ch)
+		}()
+		retry := uint32(0)
+		var err error
+		var conns []redis.Conn
+		ns := client.conf.Namespace
+		for retry < 3 {
+			retry++
+			conns, _, err = client.cluster.GetConns()
+			if err != nil {
+				client.cluster.MaybeTriggerCheckForError(err, 0)
+				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+				continue
+			}
+
+			var wg sync.WaitGroup
+			for _, c := range conns {
+				wg.Add(1)
+				go func(c redis.Conn) {
+					defer func() {
+						wg.Done()
+						if err := recover(); err != nil {
+							levelLog.Errorf("full scan error. [err=%v]\n", err)
+						}
+					}()
+					cursor := []byte("")
+
+					var tmp bytes.Buffer
+					for {
+						tmp.Truncate(0)
+						tmp.WriteString(ns)
+						tmp.WriteString(":")
+						tmp.WriteString(set)
+						tmp.WriteString(":")
+						tmp.Write(cursor)
+						ay, err := redis.Values(c.Do("FULLSCAN", tmp.Bytes(), tp, "count", 100))
+						if err != nil {
+							levelLog.Errorf("get error when DoFullScan. [err=%v]\n", err)
+							break
+						}
+						if len(ay) != 2 {
+							levelLog.Errorf("response length is not 2 when DoFullScan. [len=%d]\n", len(ay))
+							break
+						}
+
+						cursor = ay[0].([]byte)
+						a, err := redis.MultiBulk(ay[1], nil)
+						if err != nil {
+							levelLog.Errorf("get error. [Err=%v]\n", err)
+							break
+						}
+
+						ch <- a
+
+						if len(cursor) == 0 {
+							break
+						}
+					}
+				}(c)
+			}
+			wg.Wait()
+			break
 		}
 	}()
-	retry := uint32(0)
-	var err error
-	var conns []redis.Conn
-	var wg sync.WaitGroup
-	ns := client.conf.Namespace
-	for retry < 3 {
-		retry++
-		conns, _, err = client.cluster.GetConns()
-		if err != nil {
-			client.cluster.MaybeTriggerCheckForError(err, 0)
-			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
-			continue
-		}
-
-		for _, c := range conns {
-			wg.Add(1)
-			go func(c redis.Conn) {
-				defer func() {
-					wg.Done()
-					if err := recover(); err != nil {
-						levelLog.Errorf("full scan error. [err=%v]\n", err)
-					}
-				}()
-				cursor := []byte("")
-
-				var tmp bytes.Buffer
-				for {
-					tmp.Truncate(0)
-					tmp.WriteString(ns)
-					tmp.WriteString(":")
-					tmp.WriteString(set)
-					tmp.WriteString(":")
-					tmp.Write(cursor)
-					ay, err := redis.Values(c.Do("FULLSCAN", tmp.Bytes(), tp, "count", 100))
-					if err != nil {
-						levelLog.Errorf("get error when DoFullScan. [err=%v]\n", err)
-						break
-					}
-					if len(ay) != 2 {
-						levelLog.Errorf("response length is not 2 when DoFullScan. [len=%d]\n", len(ay))
-						break
-					}
-
-					cursor = ay[0].([]byte)
-					a, err := redis.MultiBulk(ay[1], nil)
-					if err != nil {
-						levelLog.Errorf("get error. [Err=%v]\n", err)
-						break
-					}
-
-					ch <- a
-
-					if len(cursor) == 0 {
-						break
-					}
-				}
-			}(c)
-		}
-		wg.Wait()
-		break
-	}
-	close(ch)
+	return ch
 }
 
 func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor []byte) ([]byte, []interface{}, error) {
