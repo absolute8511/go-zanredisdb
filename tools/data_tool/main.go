@@ -86,12 +86,13 @@ func checkList(tryFix bool, c *zanredisdb.ZanRedisClient) {
 		}
 		if int64(len(ay)) != listLen {
 			wrongKeys++
-			log.Printf("list %v llen %v not matching the lrange %v", string(k), listLen, len(ay))
 			if tryFix {
 				_, err = doCommand(c, "lfixkey", k)
 				if err != nil {
 					log.Printf("list %v fix return error: %v", string(k), err)
 				}
+			} else {
+				log.Printf("list %v llen %v not matching the lrange %v", string(k), listLen, len(ay))
 			}
 		}
 	}
