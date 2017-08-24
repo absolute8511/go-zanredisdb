@@ -20,7 +20,7 @@ var number = flag.Int("n", 1000, "request number")
 var clients = flag.Int("c", 10, "number of clients")
 var round = flag.Int("r", 1, "benchmark round number")
 var valueSize = flag.Int("vsize", 100, "kv value size")
-var tests = flag.String("t", "set,get,randget,del,lpush,rpush,lrange,lpop,rpop,hset,randhget,hget,hdel", "only run the comma separated list of tests")
+var tests = flag.String("t", "set,get", "only run the comma separated list of tests(supported randget,del,lpush,rpush,lrange,lpop,rpop,hset,randhget,hget,hdel,sadd,sismember,srem,zadd,zrange,zrevrange,zdel)")
 var primaryKeyCnt = flag.Int("pkn", 100, "primary key count for hash,list,set,zset")
 var namespace = flag.String("namespace", "default", "the prefix namespace")
 var table = flag.String("table", "test", "the table to write")
@@ -431,7 +431,7 @@ func benchHGet() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := atomic.AddInt64(&hashGetBase, 1)
 		pk := n / subKeyCnt
-		tmp := fmt.Sprintf("%010d", int(n))
+		tmp := fmt.Sprintf("%010d", int(pk))
 		subkey := n - pk*subKeyCnt
 		return doCommand(c, "HGET", "myhashkey"+tmp, subkey)
 	}
@@ -445,7 +445,7 @@ func benchHRandGet() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := int64(rand.Int() % *number)
 		pk := n / subKeyCnt
-		tmp := fmt.Sprintf("%010d", int(n))
+		tmp := fmt.Sprintf("%010d", int(pk))
 		subkey := n - pk*subKeyCnt
 		return doCommand(c, "HGET", "myhashkey"+tmp, subkey)
 	}
@@ -459,12 +459,158 @@ func benchHDel() {
 	f := func(c *zanredisdb.ZanRedisClient) error {
 		n := atomic.AddInt64(&hashDelBase, 1)
 		pk := n / subKeyCnt
-		tmp := fmt.Sprintf("%010d", int(n))
+		tmp := fmt.Sprintf("%010d", int(pk))
 		subkey := n - pk*subKeyCnt
 		return doCommand(c, "HDEL", "myhashkey"+tmp, subkey)
 	}
 
 	bench("hdel", f)
+}
+
+var setPKBase int64
+var setAddBase int64
+var setDelBase int64
+
+func benchSAdd() {
+	atomic.StoreInt64(&setPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&setAddBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "SADD", "myzsetkey"+tmp, subkey)
+	}
+	bench("sadd", f)
+}
+
+func benchSRem() {
+	atomic.StoreInt64(&setPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&setDelBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "SREM", "myzsetkey"+tmp, subkey)
+	}
+
+	bench("srem", f)
+}
+
+func benchSIsMember() {
+	atomic.StoreInt64(&setPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := int64(rand.Int() % *number)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "SISMEMBER", "myhashkey"+tmp, subkey)
+	}
+
+	bench("sismember", f)
+}
+
+var zsetPKBase int64
+var zsetAddBase int64
+var zsetDelBase int64
+
+func benchZAdd() {
+	atomic.StoreInt64(&zsetPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&zsetAddBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		member := strconv.Itoa(int(subkey))
+		member += tmp
+		ts := time.Now().String()
+		member = member + ts
+
+		return doCommand(c, "ZADD", "myzsetkey"+tmp, subkey, member)
+	}
+
+	bench("zadd", f)
+}
+
+func benchZRem() {
+	atomic.StoreInt64(&zsetPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&zsetDelBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "ZREM", "myzsetkey"+tmp, subkey)
+	}
+
+	bench("zrem", f)
+}
+
+func benchZRangeByScore() {
+	atomic.StoreInt64(&zsetPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&zsetPKBase, 1)
+		pk := n / subKeyCnt
+		if n%5 != 0 {
+			return nil
+		}
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "ZRANGEBYSCORE", "myzsetkey"+tmp, 0, rand.Int(), "limit", rand.Int()%100, 100)
+	}
+
+	bench("zrangebyscore", f)
+}
+
+func benchZRangeByRank() {
+	atomic.StoreInt64(&zsetPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&zsetPKBase, 1)
+		pk := n / subKeyCnt
+		if n%5 != 0 {
+			return nil
+		}
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "ZRANGE", "myzsetkey"+tmp, 0, rand.Int()%100)
+	}
+
+	bench("zrange", f)
+}
+
+func benchZRevRangeByScore() {
+	atomic.StoreInt64(&zsetPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&zsetPKBase, 1)
+		pk := n / subKeyCnt
+		if n%5 != 0 {
+			return nil
+		}
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "ZREVRANGEBYSCORE", "myzsetkey"+tmp, 0, rand.Int(), "limit", rand.Int()%100, 100)
+	}
+
+	bench("zrevrangebyscore", f)
+}
+
+func benchZRevRangeByRank() {
+	atomic.StoreInt64(&zsetPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&zsetPKBase, 1)
+		pk := n / subKeyCnt
+		if n%5 != 0 {
+			return nil
+		}
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "ZREVRANGE", "myzsetkey"+tmp, 0, rand.Int()%100)
+	}
+
+	bench("zrevrange", f)
 }
 
 func main() {
@@ -523,6 +669,24 @@ func main() {
 				benchHRandGet()
 			case "hdel":
 				benchHDel()
+			case "sadd":
+				benchSAdd()
+			case "srem":
+				benchSRem()
+			case "sismember":
+				benchSIsMember()
+			case "zadd":
+				benchZAdd()
+			case "zrange":
+				benchZRangeByRank()
+				benchZRangeByScore()
+			case "zrevrange":
+				//rev is too slow in leveldb, rocksdb or other
+				//maybe disable for huge data benchmark
+				benchZRevRangeByRank()
+				benchZRevRangeByScore()
+			case "zrem":
+				benchZRem()
 			}
 		}
 		println("")
