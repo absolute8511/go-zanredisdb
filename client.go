@@ -55,14 +55,28 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	}
 	for retry < 3 || time.Since(reqStart) < ro {
 		retry++
+		retryStart := time.Now()
 		conn, err = self.cluster.GetConn(shardingKey, toLeader)
+		cost := time.Since(retryStart)
+		if cost > time.Millisecond*100 {
+			levelLog.Infof("command %v-%v slow to get conn, cost: %v", cmd, string(shardingKey), cost)
+		}
 		if err != nil {
-			self.cluster.MaybeTriggerCheckForError(err, 0)
+			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
+			if clusterChanged {
+				levelLog.Infof("command err for cluster changed: %v", cmd)
+			} else {
+				levelLog.Infof("command err : %v, %v", cmd, err.Error())
+			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 			continue
 		}
 
 		rsp, err = DoRedisCmd(conn, cmd, args...)
+		cost = time.Since(retryStart)
+		if cost > time.Millisecond*100 {
+			levelLog.Infof("command %v-%v slow, cost: %v", cmd, string(shardingKey), cost)
+		}
 
 		if err != nil {
 			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)

@@ -105,7 +105,9 @@ func (self *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration) b
 		return false
 	}
 	if IsConnectRefused(err) || IsFailedOnClusterChanged(err) {
-		time.Sleep(delay)
+		if delay > 0 {
+			time.Sleep(delay)
+		}
 		select {
 		case self.tendTrigger <- 1:
 			levelLog.Infof("trigger tend for err: %v", err)
