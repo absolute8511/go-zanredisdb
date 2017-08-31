@@ -385,8 +385,8 @@ func (self *Cluster) tend() {
 			}
 			newNode := &RedisHost{addr: replica}
 			newNode.connPool = &redis.Pool{
-				MaxIdle:      10,
-				MaxActive:    int(self.conf.MaxActive),
+				MaxIdle:      self.conf.MaxIdleConn,
+				MaxActive:    self.conf.MaxActiveConn,
 				IdleTimeout:  120 * time.Second,
 				TestOnBorrow: testF,
 				Dial:         func() (redis.Conn, error) { return self.dialF(newNode.addr) },
