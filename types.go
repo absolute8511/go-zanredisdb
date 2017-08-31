@@ -35,15 +35,16 @@ func IsFailedOnNotWritable(err error) bool {
 }
 
 type Conf struct {
-	LookupList   []string
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
-	MaxActive    int32
-	TendInterval int64
-	Namespace    string
-	Password     string
+	LookupList    []string
+	DialTimeout   time.Duration
+	ReadTimeout   time.Duration
+	WriteTimeout  time.Duration
+	IdleTimeout   time.Duration
+	MaxActiveConn int
+	MaxIdleConn   int
+	TendInterval  int64
+	Namespace     string
+	Password      string
 }
 
 // api data response type
