@@ -460,7 +460,7 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string, stopC chan struc
 						tmp.WriteString(set)
 						tmp.WriteString(":")
 						tmp.Write(cursor)
-						ay, err := redis.Values(c.Do("FULLSCAN", tmp.Bytes(), tp, "count", 100))
+						ay, err := redis.Values(c.Do("FULLSCAN", tmp.Bytes(), tp, "count", 1000))
 						if err != nil {
 							levelLog.Errorf("get error when DoFullScan. [err=%v]\n", err)
 							break
