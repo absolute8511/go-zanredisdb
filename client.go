@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/absolute8511/redigo/redis"
 )
 
 const (
@@ -57,9 +57,9 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 		retry++
 		retryStart := time.Now()
 		conn, err = self.cluster.GetConn(shardingKey, toLeader)
-		cost := time.Since(retryStart)
-		if cost > time.Millisecond*100 {
-			levelLog.Infof("command %v-%v slow to get conn, cost: %v", cmd, string(shardingKey), cost)
+		cost1 := time.Since(retryStart)
+		if cost1 > time.Millisecond*100 {
+			levelLog.Infof("command %v-%v slow to get conn, cost: %v", cmd, string(shardingKey), cost1)
 		}
 		if err != nil {
 			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
@@ -72,16 +72,18 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 			continue
 		}
 
+		remote := conn.RemoteAddr()
 		rsp, err = DoRedisCmd(conn, cmd, args...)
-		cost = time.Since(retryStart)
+		cost := time.Since(retryStart)
 		if cost > time.Millisecond*100 {
-			levelLog.Infof("command %v-%v slow, cost: %v", cmd, string(shardingKey), cost)
+			levelLog.Infof("command %v-%v to node %v slow, cost: %v, get conn cost %v", cmd, string(shardingKey),
+				remote, cost, cost1)
 		}
 
 		if err != nil {
 			clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
 			if clusterChanged {
-				levelLog.Infof("command err for cluster changed: %v, %v", shardingKey, args)
+				levelLog.Infof("command err for cluster changed: %v, %v, node: %v", shardingKey, args, remote)
 				// we can retry for cluster error
 			} else if _, ok := err.(redis.Error); ok {
 				// other error from command reply no need retry
@@ -236,12 +238,11 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 	var wg sync.WaitGroup
 	connCursorMap := make(map[string]string)
 	var mutex sync.Mutex
-	var hosts []string
 	ns := client.conf.Namespace
 	for retry < 3 {
 		retry++
 		if len(cursor) == 0 {
-			conns, hosts, err = client.cluster.GetConns()
+			conns, err = client.cluster.GetConnsForAllParts()
 		} else {
 			decodedCursor, err := base64.StdEncoding.DecodeString(string(cursor))
 			if err != nil {
@@ -253,6 +254,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 				return nil, nil, errors.New("invalid cursor")
 			}
 
+			var hosts []string
 			for _, c := range cursors {
 				if len(c) == 0 {
 					continue
@@ -264,7 +266,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 				hosts = append(hosts, string(splits[0]))
 				connCursorMap[string(splits[0])] = string(splits[1])
 			}
-			conns, hosts, err = client.cluster.GetConnsByHosts(hosts)
+			conns, err = client.cluster.GetConnsByHosts(hosts)
 		}
 		if err != nil {
 			client.cluster.MaybeTriggerCheckForError(err, 0)
@@ -277,7 +279,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 			go func(index int, c redis.Conn) {
 				defer wg.Done()
 				mutex.Lock()
-				cur := connCursorMap[hosts[index]]
+				cur := connCursorMap[c.RemoteAddr()]
 				mutex.Unlock()
 				var tmp bytes.Buffer
 				tmp.WriteString(ns)
@@ -291,7 +293,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 					originCursor := ay[0].([]byte)
 					if len(originCursor) != 0 {
 						var cursor []byte
-						cursor = append(cursor, []byte(hosts[index])...)
+						cursor = append(cursor, []byte(c.RemoteAddr())...)
 						cursor = append(cursor, []byte("@")...)
 						cursor = append(cursor, originCursor...)
 						ay[0] = cursor
@@ -347,7 +349,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, stopC chan stru
 		ns := client.conf.Namespace
 		for retry < 3 {
 			retry++
-			conns, _, err = client.cluster.GetConns()
+			conns, err = client.cluster.GetConnsForAllParts()
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
 				select {
@@ -426,7 +428,7 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string, stopC chan struc
 		ns := client.conf.Namespace
 		for retry < 3 {
 			retry++
-			conns, _, err = client.cluster.GetConns()
+			conns, err = client.cluster.GetConnsForAllParts()
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
 				select {
@@ -501,14 +503,12 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 	var conns []redis.Conn
 	var wg sync.WaitGroup
 	connCursorMap := make(map[string]string)
-	var hosts []string
-
 	ns := client.conf.Namespace
 	for retry < 3 {
 		retry++
 
 		if len(cursor) == 0 {
-			conns, hosts, err = client.cluster.GetConns()
+			conns, err = client.cluster.GetConnsForAllParts()
 		} else {
 			decodedCursor, err := base64.StdEncoding.DecodeString(string(cursor))
 			if err != nil {
@@ -520,6 +520,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 				return nil, nil, errors.New("invalid cursor")
 			}
 
+			hosts := make([]string, 0)
 			for _, c := range cursors {
 				if len(c) == 0 {
 					continue
@@ -531,7 +532,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 				hosts = append(hosts, string(splits[0]))
 				connCursorMap[string(splits[0])] = string(splits[1])
 			}
-			conns, hosts, err = client.cluster.GetConnsByHosts(hosts)
+			conns, err = client.cluster.GetConnsByHosts(hosts)
 		}
 		if err != nil {
 			client.cluster.MaybeTriggerCheckForError(err, 0)
@@ -544,7 +545,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 			wg.Add(1)
 			go func(index int, c redis.Conn) {
 				defer wg.Done()
-				cur := connCursorMap[hosts[index]]
+				cur := connCursorMap[c.RemoteAddr()]
 				var tmp bytes.Buffer
 				tmp.WriteString(ns)
 				tmp.WriteString(":")
@@ -557,7 +558,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 					originCursor := ay[0].([]byte)
 					if len(originCursor) != 0 {
 						var cursor []byte
-						cursor = append(cursor, []byte(hosts[index])...)
+						cursor = append(cursor, []byte(c.RemoteAddr())...)
 						cursor = append(cursor, []byte("@")...)
 						cursor = append(cursor, originCursor...)
 						ay[0] = cursor

@@ -2,10 +2,11 @@ package zanredisdb
 
 import (
 	"bytes"
-	"github.com/garyburd/redigo/redis"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/absolute8511/redigo/redis"
 )
 
 var pdAddr = "127.0.0.1:18001"

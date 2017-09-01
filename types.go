@@ -11,6 +11,7 @@ var (
 	FailedOnNotLeader      = "E_FAILED_ON_NOT_LEADER"
 	FailedOnNotWritable    = "E_FAILED_ON_NOT_WRITABLE"
 	errNoNodeForPartition  = errors.New("no partition node")
+	errNoConnForHost       = errors.New("no any connection for host")
 )
 
 func IsConnectRefused(err error) bool {

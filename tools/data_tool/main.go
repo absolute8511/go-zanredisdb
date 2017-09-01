@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/absolute8511/go-zanredisdb"
-	"github.com/garyburd/redigo/redis"
+	"github.com/absolute8511/redigo/redis"
 )
 
 var ip = flag.String("ip", "127.0.0.1", "pd server ip")

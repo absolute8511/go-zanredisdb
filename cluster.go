@@ -2,6 +2,7 @@ package zanredisdb
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/absolute8511/redigo/redis"
 	"github.com/spaolacci/murmur3"
 )
 
@@ -21,7 +22,7 @@ func GetHashedPartitionID(pk []byte, pnum int) int {
 
 type RedisHost struct {
 	addr     string
-	connPool *redis.Pool
+	connPool *redis.QueuePool
 }
 
 type PartitionInfo struct {
@@ -124,7 +125,7 @@ func (self *Cluster) GetPartitionNum() int {
 	return self.parts.PNum
 }
 
-func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.Pool, error) {
+func (self *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, error) {
 	self.Lock()
 	defer self.Unlock()
 
@@ -163,36 +164,37 @@ func (self *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn := connPool.Get()
-	return conn, nil
+	conn, err := connPool.Get(0)
+	return conn, err
 }
 
-func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, []string, error) {
+func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {
 	if len(cluster.nodes) == 0 {
-		return nil, nil, errors.New("no server is available right now")
+		return nil, errors.New("no any node is available right now")
 	}
-	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
-		return nil, nil, errors.New("no any partition")
-	}
+
 	var conns []redis.Conn
-	for i, h := range hosts {
+	for _, h := range hosts {
 		if v, ok := cluster.nodes[h]; ok {
-			conn := v.connPool.Get()
+			conn, err := v.connPool.Get(0)
+			if err != nil {
+				return nil, err
+			}
 			conns = append(conns, conn)
 		} else {
-			hosts = append(hosts[:i], hosts[i+1:]...)
+			return nil, fmt.Errorf("node %v not found while get connection", h)
 		}
 	}
-	if len(conns) == 0 {
-		return nil, nil, errNoNodeForPartition
-	}
-	return conns, hosts, nil
+	return conns, nil
 }
 
-func (cluster *Cluster) GetConns() ([]redis.Conn, []string, error) {
+func (cluster *Cluster) GetConnsForAllParts() ([]redis.Conn, error) {
 	cluster.Lock()
 	defer cluster.Unlock()
 
+	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
+		return nil, errNoNodeForPartition
+	}
 	var hosts []string
 	for _, p := range cluster.parts.PList {
 		hosts = append(hosts, p.Leader)
@@ -200,7 +202,7 @@ func (cluster *Cluster) GetConns() ([]redis.Conn, []string, error) {
 	return cluster.getConnsByHosts(hosts)
 }
 
-func (cluster *Cluster) GetConnsByHosts(hosts []string) ([]redis.Conn, []string, error) {
+func (cluster *Cluster) GetConnsByHosts(hosts []string) ([]redis.Conn, error) {
 	cluster.Lock()
 	defer cluster.Unlock()
 	return cluster.getConnsByHosts(hosts)
@@ -384,13 +386,10 @@ func (self *Cluster) tend() {
 				continue
 			}
 			newNode := &RedisHost{addr: replica}
-			newNode.connPool = &redis.Pool{
-				MaxIdle:      self.conf.MaxIdleConn,
-				MaxActive:    self.conf.MaxActiveConn,
-				IdleTimeout:  120 * time.Second,
-				TestOnBorrow: testF,
-				Dial:         func() (redis.Conn, error) { return self.dialF(newNode.addr) },
-			}
+			newNode.connPool = redis.NewQueuePool(func() (redis.Conn, error) { return self.dialF(newNode.addr) },
+				self.conf.MaxIdleConn, self.conf.MaxActiveConn)
+			newNode.connPool.IdleTimeout = 120 * time.Second
+			newNode.connPool.TestOnBorrow = testF
 			if self.conf.IdleTimeout > time.Second {
 				newNode.connPool.IdleTimeout = self.conf.IdleTimeout
 			}
