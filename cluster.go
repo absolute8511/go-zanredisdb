@@ -16,6 +16,10 @@ import (
 	"github.com/spaolacci/murmur3"
 )
 
+const (
+	DEFAULT_CONN_POOL_SIZE = 100
+)
+
 func GetHashedPartitionID(pk []byte, pnum int) int {
 	return int(murmur3.Sum32(pk)) % pnum
 }
@@ -386,8 +390,12 @@ func (self *Cluster) tend() {
 				continue
 			}
 			newNode := &RedisHost{addr: replica}
+			maxActive := DEFAULT_CONN_POOL_SIZE
+			if self.conf.MaxActiveConn > 0 {
+				maxActive = self.conf.MaxActiveConn
+			}
 			newNode.connPool = redis.NewQueuePool(func() (redis.Conn, error) { return self.dialF(newNode.addr) },
-				self.conf.MaxIdleConn, self.conf.MaxActiveConn)
+				self.conf.MaxIdleConn, maxActive)
 			newNode.connPool.IdleTimeout = 120 * time.Second
 			newNode.connPool.TestOnBorrow = testF
 			if self.conf.IdleTimeout > time.Second {

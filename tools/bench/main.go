@@ -82,11 +82,13 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 		go func(clientIndex int) {
 			var err error
 			conf := &zanredisdb.Conf{
-				DialTimeout:  time.Second * 15,
-				ReadTimeout:  0,
-				WriteTimeout: 0,
-				TendInterval: 10,
-				Namespace:    *namespace,
+				DialTimeout:   time.Second * 15,
+				ReadTimeout:   0,
+				WriteTimeout:  0,
+				TendInterval:  10,
+				Namespace:     *namespace,
+				MaxIdleConn:   10,
+				MaxActiveConn: 100,
 			}
 			conf.LookupList = append(conf.LookupList, pdAddr)
 			c := zanredisdb.NewZanRedisClient(conf)
