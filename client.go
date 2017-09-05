@@ -279,7 +279,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 			go func(index int, c redis.Conn) {
 				defer wg.Done()
 				mutex.Lock()
-				cur := connCursorMap[c.RemoteAddr()]
+				cur := connCursorMap[c.RemoteAddrStr()]
 				mutex.Unlock()
 				var tmp bytes.Buffer
 				tmp.WriteString(ns)
@@ -293,7 +293,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 					originCursor := ay[0].([]byte)
 					if len(originCursor) != 0 {
 						var cursor []byte
-						cursor = append(cursor, []byte(c.RemoteAddr())...)
+						cursor = append(cursor, []byte(c.RemoteAddrStr())...)
 						cursor = append(cursor, []byte("@")...)
 						cursor = append(cursor, originCursor...)
 						ay[0] = cursor
@@ -545,7 +545,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 			wg.Add(1)
 			go func(index int, c redis.Conn) {
 				defer wg.Done()
-				cur := connCursorMap[c.RemoteAddr()]
+				cur := connCursorMap[c.RemoteAddrStr()]
 				var tmp bytes.Buffer
 				tmp.WriteString(ns)
 				tmp.WriteString(":")
@@ -558,7 +558,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 					originCursor := ay[0].([]byte)
 					if len(originCursor) != 0 {
 						var cursor []byte
-						cursor = append(cursor, []byte(c.RemoteAddr())...)
+						cursor = append(cursor, []byte(c.RemoteAddrStr())...)
 						cursor = append(cursor, []byte("@")...)
 						cursor = append(cursor, originCursor...)
 						ay[0] = cursor
