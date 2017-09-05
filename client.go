@@ -72,7 +72,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 			continue
 		}
 
-		remote := conn.RemoteAddr()
+		remote := conn.RemoteAddrStr()
 		rsp, err = DoRedisCmd(conn, cmd, args...)
 		cost := time.Since(retryStart)
 		if cost > time.Millisecond*100 {
