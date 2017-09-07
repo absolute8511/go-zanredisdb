@@ -40,7 +40,7 @@ func newDeadlineTransport(timeout time.Duration) *http.Transport {
 
 // stores the result in the value pointed to by ret(must be a pointer)
 func apiRequest(method string, endpoint string, body io.Reader, ret interface{}) (int, error) {
-	httpclient := &http.Client{Transport: newDeadlineTransport(2 * time.Second)}
+	httpclient := &http.Client{Transport: newDeadlineTransport(time.Second)}
 	req, err := http.NewRequest(method, endpoint, body)
 	if err != nil {
 		return -1, err

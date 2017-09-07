@@ -251,7 +251,7 @@ func (self *Cluster) tend() {
 	var listResp listPDResp
 	httpRespCode, err := apiRequest("GET", discoveryUrl, nil, &listResp)
 	if err != nil {
-		levelLog.Warningf("error discovery lookup (%s) - %s", discoveryUrl, err)
+		levelLog.Warningf("error discovery lookup (%s) - %s, code: %v", discoveryUrl, err, httpRespCode)
 		if httpRespCode < 0 {
 			self.lookupMtx.Lock()
 			// remove failed if not seed nodes
@@ -268,6 +268,12 @@ func (self *Cluster) tend() {
 				self.LookupList = newLookupList
 			}
 			self.lookupMtx.Unlock()
+			select {
+			case self.tendTrigger <- 1:
+				levelLog.Infof("trigger tend for err: %v", err)
+			default:
+			}
+			return
 		}
 	} else {
 		for _, node := range listResp.PDNodes {
@@ -282,7 +288,7 @@ func (self *Cluster) tend() {
 			}
 			if !found {
 				self.LookupList = append(self.LookupList, addr)
-				levelLog.Debugf("new lookup added %v", addr)
+				levelLog.Infof("new lookup added %v", addr)
 			}
 			self.lookupMtx.Unlock()
 		}
@@ -444,7 +450,7 @@ func (self *Cluster) tendNodes() {
 		case <-self.tendTrigger:
 			levelLog.Infof("trigger tend")
 			self.tend()
-			time.Sleep(time.Millisecond * 100)
+			time.Sleep(MIN_RETRY_SLEEP / 2)
 		case <-self.quitC:
 			self.Lock()
 			nodes := self.nodes
