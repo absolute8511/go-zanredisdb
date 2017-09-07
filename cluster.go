@@ -334,6 +334,9 @@ func (self *Cluster) tend() {
 			levelLog.Infof("partition %v missing leader node, use old instead", partID, oldPartInfo.Leader)
 			leaderAddr = oldPartInfo.Leader
 		}
+		if oldPartInfo.Leader != leaderAddr {
+			levelLog.Infof("partition %v leader changed from %v to %v", partID, oldPartInfo.Leader, leaderAddr)
+		}
 		replicas := make([]string, 0)
 		for _, n := range partNodeInfo.Replicas {
 			if n.BroadcastAddress != "" {
@@ -344,10 +347,11 @@ func (self *Cluster) tend() {
 		if len(replicas) == 0 {
 			replicas = oldPartInfo.Replicas
 		}
-		newPartitions.PList[partID] = PartitionInfo{Leader: leaderAddr, Replicas: replicas}
+		pinfo := PartitionInfo{Leader: leaderAddr, Replicas: replicas}
+		newPartitions.PList[partID] = pinfo
+		levelLog.Infof("namespace %v partition %v replicas changed to : %v", self.namespace, partID, pinfo)
 	}
 	cleanHosts := make(map[string]*RedisHost)
-	levelLog.Debugf("namespace %v partitions changed to : %v", self.namespace, newPartitions)
 	self.Lock()
 	if len(newPartitions.PList) > 0 {
 		for k, p := range self.nodes {
