@@ -20,6 +20,10 @@ const (
 	DEFAULT_CONN_POOL_SIZE = 100
 )
 
+var (
+	errNoAnyPartitions = errors.New("no any partitions")
+)
+
 func GetHashedPartitionID(pk []byte, pnum int) int {
 	return int(murmur3.Sum32(pk)) % pnum
 }
@@ -30,14 +34,37 @@ type RedisHost struct {
 }
 
 type PartitionInfo struct {
+	Leader      *RedisHost
+	Replicas    []*RedisHost
+	chosenIndex int32
+}
+
+type PartitionAddrInfo struct {
 	Leader      string
 	Replicas    []string
 	chosenIndex int32
 }
 
+func (pi *PartitionInfo) clone() PartitionInfo {
+	var cloned PartitionInfo
+	cloned.Leader = pi.Leader
+	cloned.Replicas = make([]*RedisHost, 0, len(pi.Replicas))
+	cloned.chosenIndex = pi.chosenIndex
+	for _, v := range pi.Replicas {
+		cloned.Replicas = append(cloned.Replicas, v)
+	}
+	return cloned
+}
+
 type Partitions struct {
 	PNum  int
+	Epoch int64
 	PList []PartitionInfo
+}
+
+type PartitionAddrs struct {
+	PNum  int
+	PList []PartitionAddrInfo
 }
 
 func FindString(src []string, f string) int {
@@ -56,10 +83,10 @@ type Cluster struct {
 	LookupList  []string
 	lookupIndex int
 
-	namespace    string
-	epoch        int64
-	parts        Partitions
-	nodes        map[string]*RedisHost
+	namespace string
+	//parts        Partitions
+	parts atomic.Value
+	//nodes        map[string]*RedisHost
 	tendInterval int64
 	wg           sync.WaitGroup
 	quitC        chan struct{}
@@ -74,9 +101,9 @@ func NewCluster(conf *Conf) *Cluster {
 		tendTrigger:  make(chan int, 1),
 		tendInterval: conf.TendInterval,
 		LookupList:   make([]string, len(conf.LookupList)),
-		nodes:        make(map[string]*RedisHost),
-		namespace:    conf.Namespace,
-		conf:         conf,
+		//nodes:        make(map[string]*RedisHost),
+		namespace: conf.Namespace,
+		conf:      conf,
 	}
 	if cluster.tendInterval <= 0 {
 		panic("tend interval should be great than zero")
@@ -94,9 +121,9 @@ func NewCluster(conf *Conf) *Cluster {
 
 	cluster.tend()
 
-	if len(cluster.nodes) == 0 {
-		levelLog.Errorln("no node in server list is available at init")
-	}
+	//if len(cluster.nodes) == 0 {
+	//		levelLog.Errorln("no node in server list is available at init")
+	//	}
 
 	cluster.wg.Add(1)
 
@@ -123,25 +150,46 @@ func (cluster *Cluster) MaybeTriggerCheckForError(err error, delay time.Duration
 	return false
 }
 
+func (cluster *Cluster) getPartitions() *Partitions {
+	p := cluster.parts.Load()
+	if p == nil {
+		return &Partitions{}
+	}
+	return p.(*Partitions)
+}
+
+func (cluster *Cluster) setPartitions(p *Partitions) {
+	cluster.parts.Store(p)
+}
+
+func getNodesFromParts(parts *Partitions) map[string]*RedisHost {
+	nodes := make(map[string]*RedisHost, parts.PNum)
+	for _, v := range parts.PList {
+		if v.Leader != nil {
+			nodes[v.Leader.addr] = v.Leader
+		}
+		for _, r := range v.Replicas {
+			nodes[r.addr] = r
+		}
+	}
+	return nodes
+}
+
 func (cluster *Cluster) GetPartitionNum() int {
-	cluster.RLock()
-	defer cluster.RUnlock()
-	return cluster.parts.PNum
+	return cluster.getPartitions().PNum
 }
 
 func (cluster *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, error) {
-	cluster.RLock()
-	defer cluster.RUnlock()
-
-	if len(cluster.nodes) == 0 {
-		return nil, errors.New("no server is available right now")
+	parts := cluster.getPartitions()
+	if parts == nil {
+		return nil, errNoAnyPartitions
 	}
-	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
-		return nil, errors.New("no any partition")
+	if parts.PNum == 0 || len(parts.PList) == 0 {
+		return nil, errNoAnyPartitions
 	}
-	pid := GetHashedPartitionID(pk, cluster.parts.PNum)
-	part := cluster.parts.PList[pid]
-	picked := ""
+	pid := GetHashedPartitionID(pk, parts.PNum)
+	part := parts.PList[pid]
+	var picked *RedisHost
 	if leader {
 		picked = part.Leader
 	} else {
@@ -151,16 +199,13 @@ func (cluster *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, e
 		picked = part.Replicas[int(atomic.AddInt32(&part.chosenIndex, 1))%len(part.Replicas)]
 	}
 
-	if picked == "" {
+	if picked == nil {
 		return nil, errNoNodeForPartition
 	}
-	node, ok := cluster.nodes[picked]
-	if !ok {
-		levelLog.Infof("node %v not found", picked)
-		return nil, errors.New("node not found")
+	if levelLog.Level() > 2 {
+		levelLog.Detailf("node %v chosen for partition id: %v, pk: %s", picked.addr, pid, string(pk))
 	}
-	levelLog.Detailf("node %v chosen for partition id: %v, pk: %s", picked, pid, string(pk))
-	return node.connPool, nil
+	return picked.connPool, nil
 }
 
 func (cluster *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
@@ -173,13 +218,15 @@ func (cluster *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 }
 
 func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {
-	if len(cluster.nodes) == 0 {
-		return nil, errors.New("no any node is available right now")
+	parts := cluster.getPartitions()
+	if parts == nil {
+		return nil, errNoAnyPartitions
 	}
 
+	nodes := getNodesFromParts(parts)
 	var conns []redis.Conn
 	for _, h := range hosts {
-		if v, ok := cluster.nodes[h]; ok {
+		if v, ok := nodes[h]; ok {
 			conn, err := v.connPool.Get(0)
 			if err != nil {
 				return nil, err
@@ -193,26 +240,32 @@ func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {
 }
 
 func (cluster *Cluster) GetConnsForAllParts() ([]redis.Conn, error) {
-	cluster.RLock()
-	defer cluster.RUnlock()
-
-	if cluster.parts.PNum == 0 || len(cluster.parts.PList) == 0 {
+	parts := cluster.getPartitions()
+	if parts == nil {
+		return nil, errNoAnyPartitions
+	}
+	if parts.PNum == 0 || len(parts.PList) == 0 {
 		return nil, errNoNodeForPartition
 	}
-	var hosts []string
-	for _, p := range cluster.parts.PList {
-		hosts = append(hosts, p.Leader)
+	var conns []redis.Conn
+	for _, p := range parts.PList {
+		if p.Leader == nil {
+			return nil, errors.New("no leader for partition")
+		}
+		conn, err := p.Leader.connPool.Get(0)
+		if err != nil {
+			return nil, err
+		}
+		conns = append(conns, conn)
 	}
-	return cluster.getConnsByHosts(hosts)
+	return conns, nil
 }
 
 func (cluster *Cluster) GetConnsByHosts(hosts []string) ([]redis.Conn, error) {
-	cluster.RLock()
-	defer cluster.RUnlock()
 	return cluster.getConnsByHosts(hosts)
 }
 
-func (cluster *Cluster) nextLookupEndpoint() (string, string, string) {
+func (cluster *Cluster) nextLookupEndpoint(epoch int64) (string, string, string) {
 	cluster.lookupMtx.RLock()
 	if cluster.lookupIndex >= len(cluster.LookupList) {
 		cluster.lookupIndex = 0
@@ -239,13 +292,16 @@ func (cluster *Cluster) nextLookupEndpoint() (string, string, string) {
 
 	tmpUrl := *u
 	v, _ := url.ParseQuery(tmpUrl.RawQuery)
-	v.Add("epoch", strconv.FormatInt(cluster.epoch, 10))
+	v.Add("epoch", strconv.FormatInt(epoch, 10))
 	tmpUrl.RawQuery = v.Encode()
 	return addr, tmpUrl.String(), listUrl.String()
 }
 
 func (cluster *Cluster) tend() {
-	addr, queryStr, discoveryUrl := cluster.nextLookupEndpoint()
+	oldPartitions := cluster.getPartitions()
+	oldEpoch := oldPartitions.Epoch
+
+	addr, queryStr, discoveryUrl := cluster.nextLookupEndpoint(oldEpoch)
 	// discovery other lookupd nodes from current lookupd or from etcd
 	levelLog.Debugf("discovery lookupd %s", discoveryUrl)
 	var listResp listPDResp
@@ -301,7 +357,7 @@ func (cluster *Cluster) tend() {
 		if statusCode != http.StatusNotModified {
 			levelLog.Warningf("error querying (%s) - %s", queryStr, err)
 		} else {
-			levelLog.Debugf("server return unchanged, local %v", atomic.LoadInt64(&cluster.epoch))
+			levelLog.Debugf("server return unchanged, local %v", oldEpoch)
 		}
 		return
 	}
@@ -310,18 +366,15 @@ func (cluster *Cluster) tend() {
 		levelLog.Warningf("response on partitions mismatch: %v", data)
 		return
 	}
-	newPartitions := Partitions{PNum: data.PartitionNum, PList: make([]PartitionInfo, data.PartitionNum)}
-	if data.Epoch == atomic.LoadInt64(&cluster.epoch) {
+	newPartitions := PartitionAddrs{PNum: data.PartitionNum, PList: make([]PartitionAddrInfo, data.PartitionNum)}
+	if data.Epoch == oldEpoch {
 		levelLog.Debugf("namespace info keep unchanged: %v", data)
 		return
 	}
-	if data.Epoch < atomic.LoadInt64(&cluster.epoch) {
-		levelLog.Infof("namespace info is older: %v vs %v", data.Epoch, atomic.LoadInt64(&cluster.epoch))
+	if data.Epoch < oldEpoch {
+		levelLog.Infof("namespace info is older: %v vs %v", data.Epoch, oldEpoch)
 		return
 	}
-	cluster.Lock()
-	oldPartitions := cluster.parts
-	cluster.Unlock()
 
 	for partID, partNodeInfo := range data.Partitions {
 		if partID >= newPartitions.PNum || partID < 0 {
@@ -329,19 +382,23 @@ func (cluster *Cluster) tend() {
 			return
 		}
 		node := partNodeInfo.Leader
-		leaderAddr := ""
+		var leaderAddr string
 		var oldPartInfo PartitionInfo
+		var oldLeader string
 		if partID < len(oldPartitions.PList) {
 			oldPartInfo = oldPartitions.PList[partID]
+			if oldPartInfo.Leader != nil {
+				oldLeader = oldPartInfo.Leader.addr
+			}
 		}
 		if node.BroadcastAddress != "" {
 			leaderAddr = net.JoinHostPort(node.BroadcastAddress, node.RedisPort)
 		} else {
 			levelLog.Infof("partition %v missing leader node, use old instead", partID, oldPartInfo.Leader)
-			leaderAddr = oldPartInfo.Leader
+			leaderAddr = oldLeader
 		}
-		if oldPartInfo.Leader != leaderAddr {
-			levelLog.Infof("partition %v leader changed from %v to %v", partID, oldPartInfo.Leader, leaderAddr)
+		if oldLeader != leaderAddr {
+			levelLog.Infof("partition %v leader changed from %v to %v", partID, oldLeader, leaderAddr)
 		}
 		replicas := make([]string, 0)
 		for _, n := range partNodeInfo.Replicas {
@@ -351,16 +408,19 @@ func (cluster *Cluster) tend() {
 			}
 		}
 		if len(replicas) == 0 {
-			replicas = oldPartInfo.Replicas
+			for _, r := range oldPartInfo.Replicas {
+				replicas = append(replicas, r.addr)
+			}
 		}
-		pinfo := PartitionInfo{Leader: leaderAddr, Replicas: replicas}
+		pinfo := PartitionAddrInfo{Leader: leaderAddr, Replicas: replicas}
+		pinfo.chosenIndex = oldPartInfo.chosenIndex
 		newPartitions.PList[partID] = pinfo
 		levelLog.Infof("namespace %v partition %v replicas changed to : %v", cluster.namespace, partID, pinfo)
 	}
 	cleanHosts := make(map[string]*RedisHost)
-	cluster.Lock()
+	nodes := getNodesFromParts(oldPartitions)
 	if len(newPartitions.PList) > 0 {
-		for k, p := range cluster.nodes {
+		for k, p := range nodes {
 			found := false
 			for _, partInfo := range newPartitions.PList {
 				if p.addr == partInfo.Leader {
@@ -380,11 +440,10 @@ func (cluster *Cluster) tend() {
 			if !found {
 				levelLog.Infof("node %v for namespace %v removing since not in lookup", p.addr, cluster.namespace)
 				cleanHosts[k] = p
-				delete(cluster.nodes, k)
+				delete(nodes, k)
 			}
 		}
 	}
-	cluster.parts = newPartitions
 
 	testF := func(c redis.Conn, t time.Time) (err error) {
 		if time.Since(t) > 60*time.Second {
@@ -395,7 +454,7 @@ func (cluster *Cluster) tend() {
 
 	for _, partInfo := range newPartitions.PList {
 		for _, replica := range partInfo.Replicas {
-			_, ok := cluster.nodes[replica]
+			_, ok := nodes[replica]
 			if ok {
 				continue
 			}
@@ -412,11 +471,31 @@ func (cluster *Cluster) tend() {
 				newNode.connPool.IdleTimeout = cluster.conf.IdleTimeout
 			}
 			levelLog.Infof("host:%v is available and come into service", newNode.addr)
-			cluster.nodes[replica] = newNode
+			nodes[replica] = newNode
 		}
 	}
-	atomic.StoreInt64(&cluster.epoch, data.Epoch)
-	cluster.Unlock()
+	newHostPartitions := &Partitions{PNum: newPartitions.PNum, Epoch: data.Epoch,
+		PList: make([]PartitionInfo, 0, len(newPartitions.PList))}
+
+	for _, partInfo := range newPartitions.PList {
+		var pi PartitionInfo
+		pi.chosenIndex = partInfo.chosenIndex
+		var ok bool
+		pi.Leader, ok = nodes[partInfo.Leader]
+		if !ok {
+			levelLog.Infof("host:%v not found ", partInfo.Leader)
+		}
+		for _, r := range partInfo.Replicas {
+			n, ok := nodes[r]
+			if !ok || n == nil {
+				levelLog.Infof("host:%v not found ", r)
+				continue
+			}
+			pi.Replicas = append(pi.Replicas, n)
+		}
+		newHostPartitions.PList = append(newHostPartitions.PList, pi)
+	}
+	cluster.setPartitions(newHostPartitions)
 	for _, p := range cleanHosts {
 		p.connPool.Close()
 	}
@@ -435,12 +514,11 @@ func (cluster *Cluster) tendNodes() {
 		case <-tendTicker.C:
 			cluster.tend()
 
-			cluster.Lock()
+			nodes := getNodesFromParts(cluster.getPartitions())
 			tmpPools = tmpPools[:0]
-			for _, n := range cluster.nodes {
+			for _, n := range nodes {
 				tmpPools = append(tmpPools, n.connPool)
 			}
-			cluster.Unlock()
 			for i, p := range tmpPools {
 				p.Refresh()
 				tmpPools[i] = nil
@@ -452,10 +530,7 @@ func (cluster *Cluster) tendNodes() {
 			cluster.tend()
 			time.Sleep(MIN_RETRY_SLEEP / 2)
 		case <-cluster.quitC:
-			cluster.Lock()
-			nodes := cluster.nodes
-			cluster.nodes = make(map[string]*RedisHost)
-			cluster.Unlock()
+			nodes := getNodesFromParts(cluster.getPartitions())
 			for _, node := range nodes {
 				node.connPool.Close()
 			}
