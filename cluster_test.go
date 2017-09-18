@@ -3,13 +3,14 @@ package zanredisdb
 import (
 	"bytes"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/absolute8511/redigo/redis"
 )
 
-var pdAddr = "127.0.0.1:18001"
+var pdAddr = "qabb-qa-zankv0:18001"
 var testNS = "yz_test_p4"
 
 type testLogger struct {
@@ -42,12 +43,12 @@ func TestClusterInfo(t *testing.T) {
 	SetLogger(2, newTestLogger(t))
 	cluster := NewCluster(conf)
 	defer cluster.Close()
-	nodeNum := len(cluster.nodes)
+	nodeNum := len(cluster.getPartitions().PList)
 	if nodeNum == 0 {
 		t.Fatal("cluster nodes should not empty")
 	}
 	time.Sleep(time.Second * time.Duration(conf.TendInterval*2))
-	if nodeNum != len(cluster.nodes) {
+	if nodeNum != len(cluster.getPartitions().PList) {
 		t.Fatal("cluster nodes should not changed")
 	}
 	conn, err := cluster.GetConn([]byte("11"), true)
@@ -72,7 +73,7 @@ func TestClusterReadWrite(t *testing.T) {
 	SetLogger(2, newTestLogger(t))
 	cluster := NewCluster(conf)
 	defer cluster.Close()
-	nodeNum := len(cluster.nodes)
+	nodeNum := len(cluster.getPartitions().PList)
 	if nodeNum == 0 {
 		t.Fatal("cluster nodes should not empty")
 	}
@@ -119,7 +120,7 @@ func TestClusterRemoveFailedLookup(t *testing.T) {
 	SetLogger(2, newTestLogger(t))
 	cluster := NewCluster(conf)
 	defer cluster.Close()
-	nodeNum := len(cluster.nodes)
+	nodeNum := len(cluster.getPartitions().PList)
 	if nodeNum == 0 {
 		t.Fatal("cluster nodes should not empty")
 	}
@@ -134,7 +135,7 @@ func TestClusterRemoveFailedLookup(t *testing.T) {
 	cluster.lookupMtx.Unlock()
 
 	time.Sleep(time.Second * time.Duration(conf.TendInterval*3))
-	if nodeNum != len(cluster.nodes) {
+	if nodeNum != len(cluster.getPartitions().PList) {
 		t.Fatal("cluster nodes should not changed")
 	}
 
@@ -150,4 +151,41 @@ func TestClusterRemoveFailedLookup(t *testing.T) {
 	if FindString(cluster.LookupList, failedLookup) != -1 {
 		t.Errorf("failed lookup should be removed")
 	}
+}
+
+func BenchmarkGetNodePool(b *testing.B) {
+	b.StopTimer()
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	cluster := NewCluster(conf)
+	defer cluster.Close()
+	nodeNum := len(cluster.getPartitions().PList)
+	if nodeNum == 0 {
+		b.Fatal("cluster nodes should not empty")
+	}
+	b.StartTimer()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < b.N; i++ {
+				pk := NewPKey(conf.Namespace, "unittest", []byte("rw11"+strconv.Itoa(i)))
+				conn, err := cluster.GetConn(pk.ShardingKey(), true)
+				if err != nil {
+					b.Error(err)
+				}
+				conn.Close()
+			}
+		}()
+	}
+
+	wg.Wait()
 }
