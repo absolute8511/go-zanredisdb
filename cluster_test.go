@@ -181,6 +181,7 @@ func BenchmarkGetNodePool(b *testing.B) {
 				conn, err := cluster.GetConn(pk.ShardingKey(), true)
 				if err != nil {
 					b.Error(err)
+					break
 				}
 				conn.Close()
 			}

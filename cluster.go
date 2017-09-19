@@ -508,22 +508,15 @@ func (cluster *Cluster) tendNodes() {
 		cluster.wg.Done()
 	}()
 
-	tmpPools := make([]*redis.QueuePool, 0)
 	for {
 		select {
 		case <-tendTicker.C:
 			cluster.tend()
 
 			nodes := getNodesFromParts(cluster.getPartitions())
-			tmpPools = tmpPools[:0]
 			for _, n := range nodes {
-				tmpPools = append(tmpPools, n.connPool)
+				n.connPool.Refresh()
 			}
-			for i, p := range tmpPools {
-				p.Refresh()
-				tmpPools[i] = nil
-			}
-			tmpPools = tmpPools[:0]
 
 		case <-cluster.tendTrigger:
 			levelLog.Infof("trigger tend")
