@@ -179,7 +179,7 @@ func (cluster *Cluster) GetPartitionNum() int {
 	return cluster.getPartitions().PNum
 }
 
-func (cluster *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, error) {
+func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) {
 	parts := cluster.getPartitions()
 	if parts == nil {
 		return nil, errNoAnyPartitions
@@ -204,6 +204,14 @@ func (cluster *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, e
 	}
 	if levelLog.Level() > 2 {
 		levelLog.Detailf("node %v chosen for partition id: %v, pk: %s", picked.addr, pid, string(pk))
+	}
+	return picked, nil
+}
+
+func (cluster *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, error) {
+	picked, err := cluster.GetNodeHost(pk, leader)
+	if err != nil {
+		return nil, err
 	}
 	return picked.connPool, nil
 }
@@ -469,6 +477,10 @@ func (cluster *Cluster) tend() {
 			newNode.connPool.TestOnBorrow = testF
 			if cluster.conf.IdleTimeout > time.Second {
 				newNode.connPool.IdleTimeout = cluster.conf.IdleTimeout
+			}
+			tmpConn, _ := newNode.connPool.Get(0)
+			if tmpConn != nil {
+				tmpConn.Close()
 			}
 			levelLog.Infof("host:%v is available and come into service", newNode.addr)
 			nodes[replica] = newNode

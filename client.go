@@ -15,6 +15,22 @@ const (
 	MIN_RETRY_SLEEP = time.Millisecond * 16
 )
 
+type PipelineCmd struct {
+	CmdName     string
+	ShardingKey []byte
+	ToLeader    bool
+	Args        []interface{}
+}
+type PipelineCmdList []PipelineCmd
+
+func (pl *PipelineCmdList) Add(cmd string, shardingKey []byte, toLeader bool,
+	args ...interface{}) {
+	*pl = append(*pl, PipelineCmd{CmdName: cmd,
+		ShardingKey: shardingKey,
+		ToLeader:    toLeader,
+		Args:        args})
+}
+
 type ZanRedisClient struct {
 	conf    *Conf
 	cluster *Cluster
@@ -40,6 +56,110 @@ func DoRedisCmd(conn redis.Conn, cmdName string, args ...interface{}) (reply int
 	defer conn.Close()
 	rsp, err := conn.Do(cmdName, args...)
 	return rsp, err
+}
+
+func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList) ([]interface{}, []error) {
+	rsps := make([]interface{}, len(cmds))
+	errs := make([]error, len(cmds))
+	reqs := make([]redis.Conn, len(cmds))
+	reusedConn := make(map[string]redis.Conn)
+	retryStart := time.Now()
+	for i, cmd := range cmds {
+		node, err := self.cluster.GetNodeHost(cmd.ShardingKey, cmd.ToLeader)
+		if err != nil {
+			levelLog.Infof("command err while get conn: %v, %v", cmd, err)
+			errs[i] = err
+			continue
+		}
+		conn, ok := reusedConn[node.addr]
+		if !ok {
+			conn, err = node.connPool.Get(0)
+			if err != nil {
+				levelLog.Infof("command err while get conn: %v, %v", cmd, err)
+				errs[i] = err
+				continue
+			}
+			reusedConn[node.addr] = conn
+		}
+		reqs[i] = conn
+		cost := time.Since(retryStart)
+		if cost > time.Millisecond*10 {
+			levelLog.Infof("pipeline command get conn slow, cost: %v", cost)
+		}
+		if levelLog.Level() > 2 {
+			levelLog.Debugf("command %v send to conn: %v", cmd, conn.RemoteAddrStr())
+		}
+		errs[i] = conn.Send(cmd.CmdName, cmd.Args...)
+	}
+	for addr, c := range reusedConn {
+		if c != nil {
+			err := c.Flush()
+			if err != nil {
+				for i, reqConn := range reqs {
+					if reqConn.RemoteAddrStr() == addr {
+						errs[i] = err
+					}
+				}
+			}
+		}
+	}
+
+	for i, c := range reqs {
+		if c != nil && errs[i] == nil {
+			retryStart := time.Now()
+			rsps[i], errs[i] = c.Receive()
+			cost := time.Since(retryStart)
+			if cost > time.Millisecond*100 {
+				levelLog.Infof("pipeline command %v to node %v slow, cost: %v", cmds[i], c.RemoteAddrStr(), cost)
+			}
+		}
+	}
+	for _, c := range reusedConn {
+		if c != nil {
+			c.Close()
+		}
+	}
+	return rsps, errs
+}
+
+func (self *ZanRedisClient) FlushAndWaitPipelineCmd(cmds PipelineCmdList) ([]interface{}, []error) {
+	retry := uint32(0)
+	var errs []error
+	var rsps []interface{}
+	reqStart := time.Now()
+	ro := self.conf.ReadTimeout
+	if ro == 0 {
+		ro = time.Second
+	}
+	ro = ro * time.Duration(len(cmds))
+	for retry < 3 || time.Since(reqStart) < ro {
+		retry++
+		retryStart := time.Now()
+		rsps, errs = self.doPipelineCmd(cmds)
+		cost := time.Since(retryStart)
+		if cost > time.Millisecond*200 {
+			levelLog.Infof("pipeline command %v slow, cost: %v", len(cmds), cost)
+		}
+		needRetry := false
+		for i, err := range errs {
+			if err != nil {
+				clusterChanged := self.cluster.MaybeTriggerCheckForError(err, 0)
+				if clusterChanged {
+					levelLog.Infof("pipeline command err for cluster changed: %v, %v", cmds[i], err)
+					needRetry = true
+					break
+				} else {
+					levelLog.Infof("pipeline command err: %v, %v", cmds[i], err)
+				}
+			}
+		}
+		if needRetry {
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+		} else {
+			break
+		}
+	}
+	return rsps, errs
 }
 
 func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader bool,
@@ -123,6 +243,9 @@ func (self *ZanRedisClient) KVMGet(pKeys ...*PKey) ([][]byte, error) {
 	}
 
 	partNum := self.cluster.GetPartitionNum()
+	if partNum == 0 {
+		return nil, errNoAnyPartitions
+	}
 	keysPart := make([]int, len(pKeys))
 
 	type packedKeys struct {
@@ -139,24 +262,17 @@ func (self *ZanRedisClient) KVMGet(pKeys ...*PKey) ([][]byte, error) {
 		partitionKeys[partID].rawKeys = append(partitionKeys[partID].rawKeys, pk.RawKey)
 		partitionKeys[partID].shardingKey = pk.ShardingKey()
 	}
-
 	partitionValues := make([][][]byte, partNum)
 
-	var lock sync.Mutex
-	wg := sync.WaitGroup{}
-	for partID, keys := range partitionKeys {
-		wg.Add(1)
-		go func(keys packedKeys, partID int) {
-			defer wg.Done()
-			vals, _ := redis.ByteSlices(self.DoRedis("MGET", keys.shardingKey,
-				true, keys.rawKeys...))
-			lock.Lock()
-			partitionValues[partID] = vals
-			lock.Unlock()
-
-		}(keys, partID)
+	var pipelines PipelineCmdList
+	for _, keys := range partitionKeys {
+		pipelines.Add("MGET", keys.shardingKey, true, keys.rawKeys...)
 	}
-	wg.Wait()
+	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
+	for i, rsp := range rsps {
+		vals, _ := redis.ByteSlices(rsp, errs[i])
+		partitionValues[i] = vals
+	}
 
 	resultVals := make([][]byte, len(pKeys))
 	partPos := make([]int, partNum)
