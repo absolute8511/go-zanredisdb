@@ -58,13 +58,22 @@ func DoRedisCmd(conn redis.Conn, cmdName string, args ...interface{}) (reply int
 	return rsp, err
 }
 
-func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList) ([]interface{}, []error) {
-	rsps := make([]interface{}, len(cmds))
-	errs := make([]error, len(cmds))
+func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
+	rsps []interface{}, errs []error) ([]interface{}, []error) {
 	reqs := make([]redis.Conn, len(cmds))
 	reusedConn := make(map[string]redis.Conn)
 	retryStart := time.Now()
 	for i, cmd := range cmds {
+		// avoid retry the success cmd while retrying the failed
+		if rsps[i] != nil {
+			continue
+		}
+		if errs[i] != nil {
+			if _, ok := errs[i].(redis.Error); ok {
+				continue
+			}
+		}
+		errs[i] = nil
 		node, err := self.cluster.GetNodeHost(cmd.ShardingKey, cmd.ToLeader)
 		if err != nil {
 			levelLog.Infof("command err while get conn: %v, %v", cmd, err)
@@ -96,7 +105,7 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList) ([]interface{}, 
 			err := c.Flush()
 			if err != nil {
 				for i, reqConn := range reqs {
-					if reqConn.RemoteAddrStr() == addr {
+					if reqConn != nil && reqConn.RemoteAddrStr() == addr {
 						errs[i] = err
 					}
 				}
@@ -124,8 +133,8 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList) ([]interface{}, 
 
 func (self *ZanRedisClient) FlushAndWaitPipelineCmd(cmds PipelineCmdList) ([]interface{}, []error) {
 	retry := uint32(0)
-	var errs []error
-	var rsps []interface{}
+	rsps := make([]interface{}, len(cmds))
+	errs := make([]error, len(cmds))
 	reqStart := time.Now()
 	ro := self.conf.ReadTimeout
 	if ro == 0 {
@@ -135,7 +144,7 @@ func (self *ZanRedisClient) FlushAndWaitPipelineCmd(cmds PipelineCmdList) ([]int
 	for retry < 3 || time.Since(reqStart) < ro {
 		retry++
 		retryStart := time.Now()
-		rsps, errs = self.doPipelineCmd(cmds)
+		rsps, errs = self.doPipelineCmd(cmds, rsps, errs)
 		cost := time.Since(retryStart)
 		if cost > time.Millisecond*200 {
 			levelLog.Infof("pipeline command %v slow, cost: %v", len(cmds), cost)
