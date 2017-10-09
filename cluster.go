@@ -389,7 +389,6 @@ func (cluster *Cluster) tend() {
 			levelLog.Errorf("got invalid partition : %v", partID)
 			return
 		}
-		node := partNodeInfo.Leader
 		var leaderAddr string
 		var oldPartInfo PartitionInfo
 		var oldLeader string
@@ -399,15 +398,7 @@ func (cluster *Cluster) tend() {
 				oldLeader = oldPartInfo.Leader.addr
 			}
 		}
-		if node.BroadcastAddress != "" {
-			leaderAddr = net.JoinHostPort(node.BroadcastAddress, node.RedisPort)
-		} else {
-			levelLog.Infof("partition %v missing leader node, use old instead", partID, oldPartInfo.Leader)
-			leaderAddr = oldLeader
-		}
-		if oldLeader != leaderAddr {
-			levelLog.Infof("partition %v leader changed from %v to %v", partID, oldLeader, leaderAddr)
-		}
+
 		replicas := make([]string, 0)
 		for _, n := range partNodeInfo.Replicas {
 			if n.BroadcastAddress != "" {
@@ -415,10 +406,25 @@ func (cluster *Cluster) tend() {
 				replicas = append(replicas, addr)
 			}
 		}
-		if len(replicas) == 0 {
-			for _, r := range oldPartInfo.Replicas {
-				replicas = append(replicas, r.addr)
+		node := partNodeInfo.Leader
+		if node.BroadcastAddress != "" {
+			leaderAddr = net.JoinHostPort(node.BroadcastAddress, node.RedisPort)
+		} else {
+			levelLog.Infof("partition %v missing leader node, use old instead", partID, oldPartInfo.Leader)
+			for _, n := range replicas {
+				// only use old leader when the old leader is in new replicas
+				if n == oldLeader {
+					leaderAddr = oldLeader
+					break
+				}
 			}
+		}
+		if oldLeader != leaderAddr {
+			levelLog.Infof("partition %v leader changed from %v to %v", partID, oldLeader, leaderAddr)
+		}
+		if len(replicas) == 0 {
+			levelLog.Infof("no any replicas for partition : %v", partID, partNodeInfo)
+			return
 		}
 		pinfo := PartitionAddrInfo{Leader: leaderAddr, Replicas: replicas}
 		pinfo.chosenIndex = oldPartInfo.chosenIndex
