@@ -204,8 +204,8 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 		remote := conn.RemoteAddrStr()
 		rsp, err = DoRedisCmd(conn, cmd, args...)
 		cost := time.Since(retryStart)
-		if cost > time.Millisecond*100 {
-			levelLog.Infof("command %v-%v to node %v slow, cost: %v, get conn cost %v", cmd, string(shardingKey),
+		if cost > time.Millisecond*200 {
+			levelLog.Debugf("command %v-%v to node %v slow, cost: %v, get conn cost %v", cmd, string(shardingKey),
 				remote, cost, cost1)
 		}
 
