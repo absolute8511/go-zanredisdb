@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/absolute8511/redigo/redis"
@@ -44,6 +45,17 @@ func NewZanRedisClient(conf *Conf) *ZanRedisClient {
 
 func (self *ZanRedisClient) Start() {
 	self.cluster = NewCluster(self.conf)
+}
+
+// while deploy across two datacenters, to improve read latency we can
+// enable this, and set toLeader=false while calling DoRedis
+// if there is no node in the same data center, we will fallback to the random node in other dc.
+func (self *ZanRedisClient) SwitchSameDC(useSameDC bool) {
+	if useSameDC {
+		atomic.StoreInt32(&self.cluster.choseSameDCFirst, 1)
+	} else {
+		atomic.StoreInt32(&self.cluster.choseSameDCFirst, 0)
+	}
 }
 
 func (self *ZanRedisClient) Stop() {

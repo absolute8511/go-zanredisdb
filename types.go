@@ -46,6 +46,8 @@ type Conf struct {
 	TendInterval  int64
 	Namespace     string
 	Password      string
+	// the datacenter info
+	DC string
 }
 
 // api data response type
@@ -55,6 +57,7 @@ type node struct {
 	RedisPort        string `json:"redis_port"`
 	HTTPPort         string `json:"http_port"`
 	Version          string `json:"version"`
+	DCInfo           string `json:"dc_info"`
 }
 
 type PartitionNodeInfo struct {

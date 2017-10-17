@@ -21,6 +21,12 @@ const (
 )
 
 var (
+	RetryFailedInterval     = time.Second * 5
+	MaxRetryInterval        = time.Minute
+	NextRetryFailedInterval = time.Minute * 2
+)
+
+var (
 	errNoAnyPartitions = errors.New("no any partitions")
 )
 
@@ -29,20 +35,26 @@ func GetHashedPartitionID(pk []byte, pnum int) int {
 }
 
 type RedisHost struct {
-	addr     string
-	connPool *redis.QueuePool
+	addr string
+	// datacenter
+	dcInfo string
+	// failed count since last success
+	lastFailedCnt int64
+	lastFailedTs  int64
+	connPool      *redis.QueuePool
 }
 
 type PartitionInfo struct {
 	Leader      *RedisHost
 	Replicas    []*RedisHost
-	chosenIndex int32
+	chosenIndex uint32
 }
 
 type PartitionAddrInfo struct {
-	Leader      string
-	Replicas    []string
-	chosenIndex int32
+	Leader         string
+	Replicas       []string
+	ReplicasDCInfo []string
+	chosenIndex    uint32
 }
 
 func (pi *PartitionInfo) clone() PartitionInfo {
@@ -92,7 +104,8 @@ type Cluster struct {
 	quitC        chan struct{}
 	tendTrigger  chan int
 
-	dialF func(string) (redis.Conn, error)
+	dialF            func(string) (redis.Conn, error)
+	choseSameDCFirst int32
 }
 
 func NewCluster(conf *Conf) *Cluster {
@@ -175,6 +188,32 @@ func getNodesFromParts(parts *Partitions) map[string]*RedisHost {
 	return nodes
 }
 
+func getGoodNodeInTheSameDC(partInfo *PartitionInfo, dc string) *RedisHost {
+	idx := atomic.AddUint32(&partInfo.chosenIndex, 1)
+	chosed := partInfo.Replicas[int(idx)%len(partInfo.Replicas)]
+	retry := 0
+	for retry < len(partInfo.Replicas) {
+		n := partInfo.Replicas[int(idx)%len(partInfo.Replicas)]
+		if dc != "" && n.dcInfo != dc {
+			continue
+		}
+		fc := atomic.LoadInt64(&n.lastFailedCnt)
+		if fc <= 0 {
+			chosed = n
+			break
+		}
+		// we try the failed again if last failed long ago
+		if time.Now().UnixNano()-atomic.LoadInt64(&n.lastFailedTs) > NextRetryFailedInterval.Nanoseconds() {
+			chosed = n
+			break
+		}
+
+		idx = atomic.AddUint32(&partInfo.chosenIndex, 1)
+		retry++
+	}
+	return chosed
+}
+
 func (cluster *Cluster) GetPartitionNum() int {
 	return cluster.getPartitions().PNum
 }
@@ -196,7 +235,11 @@ func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) 
 		if len(part.Replicas) == 0 {
 			return nil, errors.New("no any replica for partition")
 		}
-		picked = part.Replicas[int(atomic.AddInt32(&part.chosenIndex, 1))%len(part.Replicas)]
+		dc := ""
+		if atomic.LoadInt32(&cluster.choseSameDCFirst) == 1 {
+			dc = cluster.conf.DC
+		}
+		picked = getGoodNodeInTheSameDC(&part, dc)
 	}
 
 	if picked == nil {
@@ -400,10 +443,12 @@ func (cluster *Cluster) tend() {
 		}
 
 		replicas := make([]string, 0)
+		dcInfos := make([]string, 0)
 		for _, n := range partNodeInfo.Replicas {
 			if n.BroadcastAddress != "" {
 				addr := net.JoinHostPort(n.BroadcastAddress, n.RedisPort)
 				replicas = append(replicas, addr)
+				dcInfos = append(dcInfos, n.DCInfo)
 			}
 		}
 		node := partNodeInfo.Leader
@@ -426,8 +471,8 @@ func (cluster *Cluster) tend() {
 			levelLog.Infof("no any replicas for partition : %v", partID, partNodeInfo)
 			return
 		}
-		pinfo := PartitionAddrInfo{Leader: leaderAddr, Replicas: replicas}
-		pinfo.chosenIndex = oldPartInfo.chosenIndex
+		pinfo := PartitionAddrInfo{Leader: leaderAddr, Replicas: replicas, ReplicasDCInfo: dcInfos}
+		pinfo.chosenIndex = atomic.LoadUint32(&oldPartInfo.chosenIndex)
 		newPartitions.PList[partID] = pinfo
 		levelLog.Infof("namespace %v partition %v replicas changed to : %v", cluster.namespace, partID, pinfo)
 	}
@@ -467,12 +512,12 @@ func (cluster *Cluster) tend() {
 	}
 
 	for _, partInfo := range newPartitions.PList {
-		for _, replica := range partInfo.Replicas {
+		for idx, replica := range partInfo.Replicas {
 			_, ok := nodes[replica]
 			if ok {
 				continue
 			}
-			newNode := &RedisHost{addr: replica}
+			newNode := &RedisHost{addr: replica, dcInfo: partInfo.ReplicasDCInfo[idx]}
 			maxActive := DEFAULT_CONN_POOL_SIZE
 			if cluster.conf.MaxActiveConn > 0 {
 				maxActive = cluster.conf.MaxActiveConn
@@ -488,7 +533,7 @@ func (cluster *Cluster) tend() {
 			if tmpConn != nil {
 				tmpConn.Close()
 			}
-			levelLog.Infof("host:%v is available and come into service", newNode.addr)
+			levelLog.Infof("host:%v is available and come into service", newNode.addr+"@"+newNode.dcInfo)
 			nodes[replica] = newNode
 		}
 	}
