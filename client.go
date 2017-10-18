@@ -74,6 +74,7 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
 	rsps []interface{}, errs []error) ([]interface{}, []error) {
 	reqs := make([]redis.Conn, len(cmds))
 	reusedConn := make(map[string]redis.Conn)
+	redisHosts := make(map[string]*RedisHost)
 	retryStart := time.Now()
 	for i, cmd := range cmds {
 		// avoid retry the success cmd while retrying the failed
@@ -101,6 +102,7 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
 				continue
 			}
 			reusedConn[node.addr] = conn
+			redisHosts[node.addr] = node
 		}
 		reqs[i] = conn
 		cost := time.Since(retryStart)
@@ -121,6 +123,10 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
 						errs[i] = err
 					}
 				}
+				redisHost, ok := redisHosts[addr]
+				if ok {
+					redisHost.MaybeIncFailed(err)
+				}
 			}
 		}
 	}
@@ -132,6 +138,16 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
 			cost := time.Since(retryStart)
 			if cost > time.Millisecond*100 {
 				levelLog.Infof("pipeline command %v to node %v slow, cost: %v", cmds[i], c.RemoteAddrStr(), cost)
+			}
+			redisHost, ok := redisHosts[c.RemoteAddrStr()]
+			if errs[i] != nil {
+				if ok {
+					redisHost.MaybeIncFailed(errs[i])
+				}
+			} else {
+				if ok {
+					redisHost.ResetFailed()
+				}
 			}
 		}
 	}
@@ -189,6 +205,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	var err error
 	var rsp interface{}
 	var conn redis.Conn
+	var redisHost *RedisHost
 	reqStart := time.Now()
 	ro := self.conf.ReadTimeout
 	if ro == 0 {
@@ -197,7 +214,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	for retry < 3 || time.Since(reqStart) < ro {
 		retry++
 		retryStart := time.Now()
-		conn, err = self.cluster.GetConn(shardingKey, toLeader)
+		redisHost, conn, err = self.cluster.GetHostAndConn(shardingKey, toLeader)
 		cost1 := time.Since(retryStart)
 		if cost1 > time.Millisecond*100 {
 			levelLog.Infof("command %v-%v slow to get conn, cost: %v", cmd, string(shardingKey), cost1)
@@ -231,8 +248,10 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 				// can fail fast for some un-recovery error
 				break
 			}
+			redisHost.MaybeIncFailed(err)
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
+			redisHost.ResetFailed()
 			break
 		}
 	}

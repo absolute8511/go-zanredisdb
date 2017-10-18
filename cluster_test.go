@@ -40,7 +40,11 @@ func TestClusterInfo(t *testing.T) {
 		Namespace:    testNS,
 	}
 	conf.LookupList = append(conf.LookupList, pdAddr)
-	SetLogger(2, newTestLogger(t))
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(int32(logLevel), newTestLogger(t))
 	cluster := NewCluster(conf)
 	defer cluster.Close()
 	nodeNum := len(cluster.getPartitions().PList)
@@ -70,7 +74,11 @@ func TestClusterReadWrite(t *testing.T) {
 		Namespace:    testNS,
 	}
 	conf.LookupList = append(conf.LookupList, pdAddr)
-	SetLogger(2, newTestLogger(t))
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
 	cluster := NewCluster(conf)
 	defer cluster.Close()
 	nodeNum := len(cluster.getPartitions().PList)
@@ -117,7 +125,11 @@ func TestClusterRemoveFailedLookup(t *testing.T) {
 	failedSeedLookup := "127.0.0.1:4111"
 	conf.LookupList = append(conf.LookupList, pdAddr)
 	conf.LookupList = append(conf.LookupList, failedSeedLookup)
-	SetLogger(2, newTestLogger(t))
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
 	cluster := NewCluster(conf)
 	defer cluster.Close()
 	nodeNum := len(cluster.getPartitions().PList)

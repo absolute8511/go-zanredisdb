@@ -44,6 +44,26 @@ type RedisHost struct {
 	connPool      *redis.QueuePool
 }
 
+func (rh *RedisHost) MaybeIncFailed(err error) {
+	if err == nil {
+		return
+	}
+	if IsFailedOnClusterChanged(err) {
+		return
+	}
+	if _, ok := err.(redis.Error); ok {
+		return
+	}
+	cnt := atomic.AddInt64(&rh.lastFailedCnt, 1)
+	atomic.StoreInt64(&rh.lastFailedTs, time.Now().UnixNano())
+	levelLog.Debugf("inc failed count to %v for err: %v", cnt, err)
+}
+
+func (rh *RedisHost) ResetFailed() {
+	atomic.StoreInt64(&rh.lastFailedCnt, 0)
+	atomic.StoreInt64(&rh.lastFailedTs, 0)
+}
+
 type PartitionInfo struct {
 	Leader      *RedisHost
 	Replicas    []*RedisHost
@@ -205,6 +225,7 @@ func getGoodNodeInTheSameDC(partInfo *PartitionInfo, dc string) *RedisHost {
 		// we try the failed again if last failed long ago
 		if time.Now().UnixNano()-atomic.LoadInt64(&n.lastFailedTs) > NextRetryFailedInterval.Nanoseconds() {
 			chosed = n
+			levelLog.Debugf("retry failed node %v , failed at:%v, %v", n.addr, fc, atomic.LoadInt64(&n.lastFailedTs))
 			break
 		}
 
@@ -246,26 +267,28 @@ func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) 
 		return nil, errNoNodeForPartition
 	}
 	if levelLog.Level() > 2 {
-		levelLog.Detailf("node %v chosen for partition id: %v, pk: %s", picked.addr, pid, string(pk))
+		levelLog.Detailf("node %v @ %v (last failed: %v) chosen for partition id: %v, pk: %s", picked.addr, 
+		picked.dcInfo, atomic.LoadInt64(&picked.lastFailedCnt), pid, string(pk))
 	}
 	return picked, nil
 }
 
-func (cluster *Cluster) GetNodePool(pk []byte, leader bool) (*redis.QueuePool, error) {
+func (cluster *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
 	picked, err := cluster.GetNodeHost(pk, leader)
 	if err != nil {
 		return nil, err
 	}
-	return picked.connPool, nil
+	conn, err := picked.connPool.Get(0)
+	return conn, err
 }
 
-func (cluster *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
-	connPool, err := cluster.GetNodePool(pk, leader)
+func (cluster *Cluster) GetHostAndConn(pk []byte, leader bool) (*RedisHost, redis.Conn, error) {
+	picked, err := cluster.GetNodeHost(pk, leader)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	conn, err := connPool.Get(0)
-	return conn, err
+	conn, err := picked.connPool.Get(0)
+	return picked, conn, err
 }
 
 func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {

@@ -18,7 +18,11 @@ func TestClientMget(t *testing.T) {
 		Namespace:    testNS,
 	}
 	conf.LookupList = append(conf.LookupList, pdAddr)
-	SetLogger(2, newTestLogger(t))
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
 	zanClient := NewZanRedisClient(conf)
 	zanClient.Start()
 	defer zanClient.Stop()
@@ -98,7 +102,11 @@ func TestClientPipeline(t *testing.T) {
 		Namespace:    testNS,
 	}
 	conf.LookupList = append(conf.LookupList, pdAddr)
-	SetLogger(2, newTestLogger(t))
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
 	zanClient := NewZanRedisClient(conf)
 	zanClient.Start()
 	defer zanClient.Stop()
