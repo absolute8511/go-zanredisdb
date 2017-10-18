@@ -146,7 +146,7 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
 				}
 			} else {
 				if ok {
-					redisHost.ResetFailed()
+					redisHost.IncSuccess()
 				}
 			}
 		}
@@ -251,7 +251,7 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 			redisHost.MaybeIncFailed(err)
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
-			redisHost.ResetFailed()
+			redisHost.IncSuccess()
 			break
 		}
 	}

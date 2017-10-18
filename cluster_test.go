@@ -57,7 +57,7 @@ func TestClusterInfo(t *testing.T) {
 	}
 	conn, err := cluster.GetConn([]byte("11"), true)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	_, err = conn.Do("PING")
 	if err != nil {
@@ -89,7 +89,7 @@ func TestClusterReadWrite(t *testing.T) {
 		pk := NewPKey(conf.Namespace, "unittest", []byte("rw11"+strconv.Itoa(i)))
 		conn, err := cluster.GetConn(pk.ShardingKey(), true)
 		if err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		defer conn.Close()
 		rawKey := pk.RawKey

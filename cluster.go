@@ -24,6 +24,7 @@ var (
 	RetryFailedInterval     = time.Second * 5
 	MaxRetryInterval        = time.Minute
 	NextRetryFailedInterval = time.Minute * 2
+	ErrCntForStopRW         = 3
 )
 
 var (
@@ -56,12 +57,14 @@ func (rh *RedisHost) MaybeIncFailed(err error) {
 	}
 	cnt := atomic.AddInt64(&rh.lastFailedCnt, 1)
 	atomic.StoreInt64(&rh.lastFailedTs, time.Now().UnixNano())
-	levelLog.Debugf("inc failed count to %v for err: %v", cnt, err)
+	levelLog.Debugf("host %v inc failed count to %v for err: %v", rh.addr, cnt, err)
 }
 
-func (rh *RedisHost) ResetFailed() {
-	atomic.StoreInt64(&rh.lastFailedCnt, 0)
-	atomic.StoreInt64(&rh.lastFailedTs, 0)
+func (rh *RedisHost) IncSuccess() {
+	fcnt := atomic.AddInt64(&rh.lastFailedCnt, -1)
+	if fcnt < 0 {
+		atomic.StoreInt64(&rh.lastFailedCnt, 0)
+	}
 }
 
 type PartitionInfo struct {
@@ -212,25 +215,36 @@ func getGoodNodeInTheSameDC(partInfo *PartitionInfo, dc string) *RedisHost {
 	idx := atomic.AddUint32(&partInfo.chosenIndex, 1)
 	chosed := partInfo.Replicas[int(idx)%len(partInfo.Replicas)]
 	retry := 0
+	leastFailed := atomic.LoadInt64(&chosed.lastFailedCnt)
+	leastFailedNode := chosed
 	for retry < len(partInfo.Replicas) {
 		n := partInfo.Replicas[int(idx)%len(partInfo.Replicas)]
 		if dc != "" && n.dcInfo != dc {
 			continue
 		}
 		fc := atomic.LoadInt64(&n.lastFailedCnt)
-		if fc <= 0 {
+		if fc <= int64(ErrCntForStopRW) {
 			chosed = n
+			leastFailedNode = nil
 			break
 		}
 		// we try the failed again if last failed long ago
 		if time.Now().UnixNano()-atomic.LoadInt64(&n.lastFailedTs) > NextRetryFailedInterval.Nanoseconds() {
 			chosed = n
+			leastFailedNode = nil
 			levelLog.Debugf("retry failed node %v , failed at:%v, %v", n.addr, fc, atomic.LoadInt64(&n.lastFailedTs))
 			break
 		}
 
 		idx = atomic.AddUint32(&partInfo.chosenIndex, 1)
 		retry++
+		if fc < leastFailed {
+			leastFailedNode = n
+			leastFailed = fc
+		}
+	}
+	if leastFailedNode != nil {
+		chosed = leastFailedNode
 	}
 	return chosed
 }
@@ -267,8 +281,8 @@ func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) 
 		return nil, errNoNodeForPartition
 	}
 	if levelLog.Level() > 2 {
-		levelLog.Detailf("node %v @ %v (last failed: %v) chosen for partition id: %v, pk: %s", picked.addr, 
-		picked.dcInfo, atomic.LoadInt64(&picked.lastFailedCnt), pid, string(pk))
+		levelLog.Detailf("node %v @ %v (last failed: %v) chosen for partition id: %v, pk: %s", picked.addr,
+			picked.dcInfo, atomic.LoadInt64(&picked.lastFailedCnt), pid, string(pk))
 	}
 	return picked, nil
 }
