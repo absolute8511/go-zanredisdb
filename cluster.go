@@ -224,6 +224,7 @@ func getGoodNodeInTheSameDC(partInfo *PartitionInfo, dc string) *RedisHost {
 	leastFailed := atomic.LoadInt64(&chosed.lastFailedCnt)
 	leastFailedNode := chosed
 	for retry < len(partInfo.Replicas) {
+		retry++
 		n := partInfo.Replicas[int(idx)%len(partInfo.Replicas)]
 		if dc != "" && n.dcInfo != dc {
 			continue
@@ -243,7 +244,6 @@ func getGoodNodeInTheSameDC(partInfo *PartitionInfo, dc string) *RedisHost {
 		}
 
 		idx = atomic.AddUint32(&partInfo.chosenIndex, 1)
-		retry++
 		if fc < leastFailed {
 			leastFailedNode = n
 			leastFailed = fc

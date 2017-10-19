@@ -17,6 +17,8 @@ import (
 var ip = flag.String("ip", "127.0.0.1", "pd server ip")
 var port = flag.Int("port", 18001, "pd server port")
 var number = flag.Int("n", 1000, "request number")
+var dc = flag.String("dcinfo", "", "the dc info for this client")
+var useLeader = flag.Bool("leader", true, "whether force only send request to leader, otherwise chose any node in the same dc first")
 var clients = flag.Int("c", 10, "number of clients")
 var round = flag.Int("r", 1, "benchmark round number")
 var valueSize = flag.Int("vsize", 100, "kv value size")
@@ -50,7 +52,7 @@ func doCommand(client *zanredisdb.ZanRedisClient, cmd string, args ...interface{
 		args[0] = prefix + strconv.Itoa(int(vt))
 	}
 	s := time.Now()
-	_, err := client.DoRedis(strings.ToUpper(cmd), []byte(sharding), true, args...)
+	_, err := client.DoRedis(strings.ToUpper(cmd), []byte(sharding), *useLeader, args...)
 	if err != nil {
 		fmt.Printf("do %s (%v) error %s\n", cmd, args[0], err.Error())
 		return err
@@ -89,6 +91,7 @@ func bench(cmd string, f func(c *zanredisdb.ZanRedisClient) error) {
 				Namespace:     *namespace,
 				MaxIdleConn:   10,
 				MaxActiveConn: 100,
+				DC:            *dc,
 			}
 			conf.LookupList = append(conf.LookupList, pdAddr)
 			c := zanredisdb.NewZanRedisClient(conf)
