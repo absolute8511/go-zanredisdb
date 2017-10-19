@@ -61,7 +61,13 @@ func (rh *RedisHost) MaybeIncFailed(err error) {
 }
 
 func (rh *RedisHost) IncSuccess() {
-	fcnt := atomic.AddInt64(&rh.lastFailedCnt, -1)
+	fcnt := atomic.LoadInt64(&rh.lastFailedCnt)
+	if fcnt == 0 {
+		return
+	}
+	if fcnt > 0 {
+		fcnt = atomic.AddInt64(&rh.lastFailedCnt, -1)
+	}
 	if fcnt < 0 {
 		atomic.StoreInt64(&rh.lastFailedCnt, 0)
 	}
