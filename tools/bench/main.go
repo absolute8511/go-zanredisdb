@@ -21,6 +21,7 @@ var dc = flag.String("dcinfo", "", "the dc info for this client")
 var useLeader = flag.Bool("leader", true, "whether force only send request to leader, otherwise chose any node in the same dc first")
 var clients = flag.Int("c", 10, "number of clients")
 var round = flag.Int("r", 1, "benchmark round number")
+var logLevel = flag.Int("loglevel", 1, "log level")
 var valueSize = flag.Int("vsize", 100, "kv value size")
 var tests = flag.String("t", "set,get", "only run the comma separated list of tests(supported randget,del,lpush,rpush,lrange,lpop,rpop,hset,randhget,hget,hdel,sadd,sismember,srem,zadd,zrange,zrevrange,zdel)")
 var primaryKeyCnt = flag.Int("pkn", 100, "primary key count for hash,list,set,zset")
@@ -639,7 +640,7 @@ func main() {
 		*round = 1
 	}
 
-	zanredisdb.SetLogger(1, zanredisdb.NewSimpleLogger())
+	zanredisdb.SetLogger(int32(*logLevel), zanredisdb.NewSimpleLogger())
 	ts := strings.Split(*tests, ",")
 	for i := 0; i < *round; i++ {
 		for _, s := range ts {
