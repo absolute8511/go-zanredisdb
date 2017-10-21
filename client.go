@@ -99,6 +99,7 @@ func (self *ZanRedisClient) doPipelineCmd(cmds PipelineCmdList,
 			if err != nil {
 				levelLog.Infof("command err while get conn: %v, %v", cmd, err)
 				errs[i] = err
+				node.MaybeIncFailed(err)
 				continue
 			}
 			reusedConn[node.addr] = conn
@@ -225,6 +226,9 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 				levelLog.Infof("command err for cluster changed: %v", cmd)
 			} else {
 				levelLog.Infof("command err : %v, %v", cmd, err.Error())
+			}
+			if redisHost != nil {
+				redisHost.MaybeIncFailed(err)
 			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 			continue
