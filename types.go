@@ -10,6 +10,7 @@ var (
 	FailedOnClusterChanged = "ERR_CLUSTER_CHANGED"
 	FailedOnNotLeader      = "E_FAILED_ON_NOT_LEADER"
 	FailedOnNotWritable    = "E_FAILED_ON_NOT_WRITABLE"
+	FailedOnNodeStopped    = "the node stopped"
 	errNoNodeForPartition  = errors.New("no partition node")
 	errNoConnForHost       = errors.New("no any connection for host")
 )
@@ -23,7 +24,9 @@ func IsConnectRefused(err error) bool {
 
 func IsFailedOnClusterChanged(err error) bool {
 	if err != nil {
-		return strings.HasPrefix(err.Error(), FailedOnClusterChanged) || err == errNoNodeForPartition
+		return strings.HasPrefix(err.Error(), FailedOnClusterChanged) ||
+			err == errNoNodeForPartition ||
+			strings.Contains(err.Error(), FailedOnNodeStopped)
 	}
 	return false
 }
