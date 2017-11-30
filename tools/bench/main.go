@@ -273,6 +273,28 @@ func benchDel() {
 	bench("del", f)
 }
 
+func benchPFAdd() {
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := int64(rand.Int() % *number)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("pf_%010d", int(pk))
+		subkey := n - pk*subKeyCnt
+		return doCommand(c, "PFADD", tmp, subkey)
+	}
+	bench("PFADD", f)
+}
+
+func benchPFCount() {
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := int64(rand.Int() % *number)
+		pk := n % int64(*primaryKeyCnt)
+		tmp := fmt.Sprintf("pf_%010d", int(pk))
+		return doCommand(c, "PFCOUNT", tmp)
+	}
+	bench("PFCOUNT", f)
+}
+
 var listPushBase int64
 var listRange10Base int64
 var listRange50Base int64
@@ -649,6 +671,10 @@ func main() {
 				benchSet()
 			case "setex":
 				benchSetEx()
+			case "pfadd":
+				benchPFAdd()
+			case "pfcount":
+				benchPFCount()
 			case "get":
 				benchGet()
 			case "randget":
