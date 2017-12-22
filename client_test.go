@@ -56,7 +56,7 @@ func TestClientMget(t *testing.T) {
 		}
 	}
 
-	mgetVals, err := zanClient.KVMGet(testKeys...)
+	mgetVals, err := zanClient.KVMGet(true, testKeys...)
 	if err != nil {
 		t.Errorf("failed mget: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestClientMget(t *testing.T) {
 		t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(delPipelines))
 	}
 
-	mgetVals, err = zanClient.KVMGet(testKeys...)
+	mgetVals, err = zanClient.KVMGet(true, testKeys...)
 	if err != nil {
 		t.Errorf("failed mget: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestClientPipeline(t *testing.T) {
 		}
 		value, err := redis.Bytes(rsp, errs[i])
 		if err != redis.ErrNil && len(value) > 0 {
-			t.Fatalf("should be deleted:%v, value:%v", err, value)
+			t.Fatalf("should be deleted:%v, value:%v", err, string(value))
 		}
 	}
 }

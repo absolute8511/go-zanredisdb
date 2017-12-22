@@ -279,7 +279,7 @@ func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	return err
 }
 
-func (self *ZanRedisClient) KVMGet(pKeys ...*PKey) ([][]byte, error) {
+func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, error) {
 	for _, pk := range pKeys {
 		if pk.Namespace != self.conf.Namespace {
 			return nil, fmt.Errorf("invalid Namespace:%s", pk.Namespace)
@@ -310,7 +310,7 @@ func (self *ZanRedisClient) KVMGet(pKeys ...*PKey) ([][]byte, error) {
 
 	var pipelines PipelineCmdList
 	for _, keys := range partitionKeys {
-		pipelines.Add("MGET", keys.shardingKey, true, keys.rawKeys...)
+		pipelines.Add("MGET", keys.shardingKey, readLeader, keys.rawKeys...)
 	}
 	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
 	for i, rsp := range rsps {
