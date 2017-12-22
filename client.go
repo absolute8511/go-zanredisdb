@@ -279,16 +279,16 @@ func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
 	return err
 }
 
-func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, error) {
+func (self *ZanRedisClient) getPipelinesFromKeys(cmdName string, readLeader bool, pKeys ...*PKey) (int, []int, PipelineCmdList, error) {
 	for _, pk := range pKeys {
 		if pk.Namespace != self.conf.Namespace {
-			return nil, fmt.Errorf("invalid Namespace:%s", pk.Namespace)
+			return 0, nil, nil, fmt.Errorf("invalid Namespace:%s", pk.Namespace)
 		}
 	}
 
 	partNum := self.cluster.GetPartitionNum()
 	if partNum == 0 {
-		return nil, errNoAnyPartitions
+		return 0, nil, nil, errNoAnyPartitions
 	}
 	keysPart := make([]int, len(pKeys))
 
@@ -306,13 +306,58 @@ func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, e
 		partitionKeys[partID].rawKeys = append(partitionKeys[partID].rawKeys, pk.RawKey)
 		partitionKeys[partID].shardingKey = pk.ShardingKey()
 	}
-	partitionValues := make([][][]byte, partNum)
 
 	var pipelines PipelineCmdList
 	for _, keys := range partitionKeys {
-		pipelines.Add("MGET", keys.shardingKey, readLeader, keys.rawKeys...)
+		pipelines.Add(cmdName, keys.shardingKey, readLeader, keys.rawKeys...)
+	}
+	return partNum, keysPart, pipelines, nil
+}
+
+func (self *ZanRedisClient) KVMDel(readLeader bool, pKeys ...*PKey) (int64, error) {
+	_, _, pipelines, err := self.getPipelinesFromKeys("DEL", readLeader, pKeys...)
+	if err != nil {
+		return 0, err
 	}
 	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
+
+	totalDels := int64(0)
+	for i, rsp := range rsps {
+		val, err := redis.Int64(rsp, errs[i])
+		if err != nil {
+			return 0, err
+		}
+		totalDels += val
+	}
+	return totalDels, nil
+}
+
+func (self *ZanRedisClient) KVMExists(readLeader bool, pKeys ...*PKey) (int64, error) {
+	_, _, pipelines, err := self.getPipelinesFromKeys("EXISTS", readLeader, pKeys...)
+	if err != nil {
+		return 0, err
+	}
+	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
+
+	totalDels := int64(0)
+	for i, rsp := range rsps {
+		val, err := redis.Int64(rsp, errs[i])
+		if err != nil {
+			return 0, err
+		}
+		totalDels += val
+	}
+	return totalDels, nil
+}
+
+func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, error) {
+	partNum, keysPart, pipelines, err := self.getPipelinesFromKeys("MGET", readLeader, pKeys...)
+	if err != nil {
+		return nil, err
+	}
+	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
+
+	partitionValues := make([][][]byte, partNum)
 	for i, rsp := range rsps {
 		vals, _ := redis.ByteSlices(rsp, errs[i])
 		partitionValues[i] = vals

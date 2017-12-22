@@ -30,7 +30,7 @@ func TestClientMget(t *testing.T) {
 	testKeys := make([]*PKey, 0, 10)
 	testValues := make([][]byte, 0, 10)
 	var writePipelines PipelineCmdList
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		pk := NewPKey(conf.Namespace, "unittest", []byte("rw11"+strconv.Itoa(i)))
 		testKeys = append(testKeys, pk)
 		rawKey := pk.RawKey
@@ -42,7 +42,7 @@ func TestClientMget(t *testing.T) {
 	if len(rsps) != len(writePipelines) {
 		t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(writePipelines))
 	}
-	if len(rsps) != 10 {
+	if len(rsps) != 20 {
 		t.Errorf("rsp list should be equal to command number %v", len(rsps))
 	}
 	t.Logf("test values: %v", len(testValues))
@@ -66,7 +66,7 @@ func TestClientMget(t *testing.T) {
 	for i, val := range mgetVals {
 		t.Log(string(val))
 		if !bytes.Equal(val, testValues[i]) {
-			t.Errorf("should equal: %v, %v", val, testValues[i])
+			t.Errorf("should equal: %v, %v", val, string(testValues[i]))
 		}
 	}
 	var delPipelines PipelineCmdList
@@ -90,6 +90,96 @@ func TestClientMget(t *testing.T) {
 		if len(val) > 0 {
 			t.Errorf("should empty after del: %v", val)
 		}
+	}
+}
+
+func TestClientMExistsAndDel(t *testing.T) {
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
+	zanClient := NewZanRedisClient(conf)
+	zanClient.Start()
+	defer zanClient.Stop()
+	time.Sleep(time.Second)
+	testKeys := make([]*PKey, 0, 10)
+	testValues := make([][]byte, 0, 10)
+	var writePipelines PipelineCmdList
+	for i := 0; i < 20; i++ {
+		pk := NewPKey(conf.Namespace, "unittest", []byte("rw11"+strconv.Itoa(i)))
+		testKeys = append(testKeys, pk)
+		rawKey := pk.RawKey
+		testValue := pk.ShardingKey()
+		writePipelines.Add("SET", pk.ShardingKey(), true, rawKey, testValue)
+		testValues = append(testValues, testValue)
+	}
+
+	existsCnt, err := zanClient.KVMExists(true, testKeys...)
+	if err != nil {
+		t.Errorf("failed exists: %v", err)
+	}
+	if existsCnt != int64(0) {
+		t.Errorf("exists count %v should be 0 for init", existsCnt)
+		return
+	}
+
+	rsps, errs := zanClient.FlushAndWaitPipelineCmd(writePipelines)
+	if len(rsps) != len(writePipelines) {
+		t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(writePipelines))
+	}
+	if len(rsps) != 20 {
+		t.Errorf("rsp list should be equal to command number %v", len(rsps))
+	}
+	t.Logf("test values: %v", len(testValues))
+	for i, rsp := range rsps {
+		if errs[i] != nil {
+			t.Errorf("rsp error: %v", errs[i])
+		}
+		_, err := redis.String(rsp, errs[i])
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	existsCnt, err = zanClient.KVMExists(true, testKeys...)
+	if err != nil {
+		t.Errorf("failed exists: %v", err)
+	}
+	if existsCnt != int64(len(testKeys)) {
+		t.Errorf("exists count %v mismatch keys: %v", existsCnt, len(testKeys))
+	}
+
+	delCnt, err := zanClient.KVMDel(true, testKeys...)
+	if err != nil {
+		t.Errorf("failed del: %v", err)
+	}
+	if delCnt != int64(len(testKeys)) {
+		t.Errorf("del cnt %v should equal keys: %v", delCnt, len(testKeys))
+	}
+
+	existsCnt, err = zanClient.KVMExists(true, testKeys...)
+	if err != nil {
+		t.Errorf("failed exists: %v", err)
+	}
+	if existsCnt != int64(0) {
+		t.Errorf("exists count %v mismatch keys: %v", existsCnt, len(testKeys))
+	}
+
+	delCnt, err = zanClient.KVMDel(true, testKeys...)
+	if err != nil {
+		t.Errorf("failed del: %v", err)
+	}
+	if delCnt != int64(0) {
+		t.Errorf("del cnt %v should be 0 after deleted", delCnt)
 	}
 }
 
