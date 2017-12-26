@@ -309,7 +309,9 @@ func (self *ZanRedisClient) getPipelinesFromKeys(cmdName string, readLeader bool
 
 	var pipelines PipelineCmdList
 	for _, keys := range partitionKeys {
-		pipelines.Add(cmdName, keys.shardingKey, readLeader, keys.rawKeys...)
+		if len(keys.rawKeys) > 0 {
+			pipelines.Add(cmdName, keys.shardingKey, readLeader, keys.rawKeys...)
+		}
 	}
 	return partNum, keysPart, pipelines, nil
 }
@@ -359,8 +361,12 @@ func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, e
 
 	partitionValues := make([][][]byte, partNum)
 	for i, rsp := range rsps {
-		vals, _ := redis.ByteSlices(rsp, errs[i])
-		partitionValues[i] = vals
+		vals, err := redis.ByteSlices(rsp, errs[i])
+		if err != nil {
+			return nil, err
+		} else {
+			partitionValues[i] = vals
+		}
 	}
 
 	resultVals := make([][]byte, len(pKeys))
