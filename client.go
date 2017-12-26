@@ -309,7 +309,9 @@ func (self *ZanRedisClient) getPipelinesFromKeys(cmdName string, readLeader bool
 
 	var pipelines PipelineCmdList
 	for _, keys := range partitionKeys {
-		pipelines.Add(cmdName, keys.shardingKey, readLeader, keys.rawKeys...)
+		if len(keys.rawKeys) > 0 {
+			pipelines.Add(cmdName, keys.shardingKey, readLeader, keys.rawKeys...)
+		}
 	}
 	return partNum, keysPart, pipelines, nil
 }
@@ -339,15 +341,15 @@ func (self *ZanRedisClient) KVMExists(readLeader bool, pKeys ...*PKey) (int64, e
 	}
 	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
 
-	totalDels := int64(0)
+	totalExists := int64(0)
 	for i, rsp := range rsps {
 		val, err := redis.Int64(rsp, errs[i])
 		if err != nil {
 			return 0, err
 		}
-		totalDels += val
+		totalExists += val
 	}
-	return totalDels, nil
+	return totalExists, nil
 }
 
 func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, error) {
@@ -358,9 +360,14 @@ func (self *ZanRedisClient) KVMGet(readLeader bool, pKeys ...*PKey) ([][]byte, e
 	rsps, errs := self.FlushAndWaitPipelineCmd(pipelines)
 
 	partitionValues := make([][][]byte, partNum)
-	for i, rsp := range rsps {
-		vals, _ := redis.ByteSlices(rsp, errs[i])
-		partitionValues[i] = vals
+	for i, pipelineCmd := range pipelines {
+		vals, err := redis.ByteSlices(rsps[i], errs[i])
+		if err != nil {
+			return nil, err
+		} else {
+			partID := GetHashedPartitionID(pipelineCmd.ShardingKey, partNum)
+			partitionValues[partID] = vals
+		}
 	}
 
 	resultVals := make([][]byte, len(pKeys))
