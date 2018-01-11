@@ -28,7 +28,8 @@ var (
 )
 
 var (
-	errNoAnyPartitions = errors.New("no any partitions")
+	errNoAnyPartitions  = errors.New("no any partitions")
+	errInvalidPartition = errors.New("partition invalid")
 )
 
 func GetHashedPartitionID(pk []byte, pnum int) int {
@@ -43,6 +44,10 @@ type RedisHost struct {
 	lastFailedCnt int64
 	lastFailedTs  int64
 	connPool      *redis.QueuePool
+}
+
+func (rh *RedisHost) Addr() string {
+	return rh.addr
 }
 
 func (rh *RedisHost) MaybeIncFailed(err error) {
@@ -259,22 +264,13 @@ func (cluster *Cluster) GetPartitionNum() int {
 	return cluster.getPartitions().PNum
 }
 
-func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) {
-	parts := cluster.getPartitions()
-	if parts == nil {
-		return nil, errNoAnyPartitions
-	}
-	if parts.PNum == 0 || len(parts.PList) == 0 {
-		return nil, errNoAnyPartitions
-	}
-	pid := GetHashedPartitionID(pk, parts.PNum)
-	part := parts.PList[pid]
+func (cluster *Cluster) getHostByPart(part PartitionInfo, leader bool) (*RedisHost, error) {
 	var picked *RedisHost
 	if leader {
 		picked = part.Leader
 	} else {
 		if len(part.Replicas) == 0 {
-			return nil, errors.New("no any replica for partition")
+			return nil, errNoNodeForPartition
 		}
 		dc := ""
 		if atomic.LoadInt32(&cluster.choseSameDCFirst) == 1 {
@@ -285,6 +281,43 @@ func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) 
 
 	if picked == nil {
 		return nil, errNoNodeForPartition
+	}
+	return picked, nil
+}
+
+func (cluster *Cluster) getPartitionsWithError() (*Partitions, error) {
+	parts := cluster.getPartitions()
+	if parts == nil {
+		return nil, errNoAnyPartitions
+	}
+	if parts.PNum == 0 || len(parts.PList) == 0 {
+		return nil, errNoAnyPartitions
+	}
+	return parts, nil
+}
+
+func (cluster *Cluster) GetHostByPart(pid int, leader bool) (*RedisHost, error) {
+	parts, err := cluster.getPartitionsWithError()
+	if err != nil {
+		return nil, err
+	}
+	if pid >= len(parts.PList) {
+		return nil, errInvalidPartition
+	}
+	part := parts.PList[pid]
+	return cluster.getHostByPart(part, leader)
+}
+
+func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) {
+	parts, err := cluster.getPartitionsWithError()
+	if err != nil {
+		return nil, err
+	}
+	pid := GetHashedPartitionID(pk, parts.PNum)
+	part := parts.PList[pid]
+	picked, err := cluster.getHostByPart(part, leader)
+	if err != nil {
+		return nil, err
 	}
 	if levelLog.Level() > 2 {
 		levelLog.Detailf("node %v @ %v (last failed: %v) chosen for partition id: %v, pk: %s", picked.addr,
