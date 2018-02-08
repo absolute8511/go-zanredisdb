@@ -438,7 +438,7 @@ func (cluster *Cluster) tend() {
 		if httpRespCode < 0 {
 			cluster.lookupMtx.Lock()
 			// remove failed if not seed nodes
-			if FindString(cluster.conf.LookupList, addr) == -1 {
+			if FindString(cluster.conf.LookupList, addr) == -1 && IsConnectRefused(err) {
 				levelLog.Infof("removing failed lookup : %v", addr)
 				newLookupList := make([]string, 0)
 				for _, v := range cluster.LookupList {

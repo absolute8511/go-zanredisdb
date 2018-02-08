@@ -17,7 +17,7 @@ var (
 
 func IsConnectRefused(err error) bool {
 	if err != nil {
-		return strings.Index(strings.ToLower(err.Error()), "connection refused") != -1
+		return strings.Contains(strings.ToLower(err.Error()), "connection refused")
 	}
 	return false
 }
