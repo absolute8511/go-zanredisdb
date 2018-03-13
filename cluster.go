@@ -308,6 +308,18 @@ func (cluster *Cluster) GetHostByPart(pid int, leader bool) (*RedisHost, error) 
 	return cluster.getHostByPart(part, leader)
 }
 
+func (cluster *Cluster) GetAllHostsByPart(pid int) ([]*RedisHost, error) {
+	parts, err := cluster.getPartitionsWithError()
+	if err != nil {
+		return nil, err
+	}
+	if pid >= len(parts.PList) {
+		return nil, errInvalidPartition
+	}
+	part := parts.PList[pid]
+	return part.clone().Replicas, nil
+}
+
 func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) {
 	parts, err := cluster.getPartitionsWithError()
 	if err != nil {
