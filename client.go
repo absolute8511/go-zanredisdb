@@ -175,7 +175,7 @@ func (self *ZanRedisClient) FlushAndWaitPipelineCmd(cmds PipelineCmdList) ([]int
 		retryStart := time.Now()
 		rsps, errs = self.doPipelineCmd(cmds, rsps, errs)
 		cost := time.Since(retryStart)
-		if cost > time.Millisecond*200 {
+		if cost > time.Millisecond*20*time.Duration(len(cmds)) {
 			levelLog.Infof("pipeline command %v slow, cost: %v", len(cmds), cost)
 		}
 		needRetry := false
