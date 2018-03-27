@@ -59,6 +59,7 @@ type node struct {
 	Hostname         string `json:"hostname"`
 	RedisPort        string `json:"redis_port"`
 	HTTPPort         string `json:"http_port"`
+	GrpcPort         string `json:"grpc_port"`
 	Version          string `json:"version"`
 	DCInfo           string `json:"dc_info"`
 }

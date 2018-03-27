@@ -40,6 +40,7 @@ type RedisHost struct {
 	addr string
 	// datacenter
 	dcInfo string
+	nInfo  node
 	// failed count since last success
 	lastFailedCnt int64
 	lastFailedTs  int64
@@ -48,6 +49,14 @@ type RedisHost struct {
 
 func (rh *RedisHost) Addr() string {
 	return rh.addr
+}
+
+func (rh *RedisHost) GrpcAddr() string {
+	h, _, err := net.SplitHostPort(rh.addr)
+	if err != nil {
+		return ""
+	}
+	return net.JoinHostPort(h, rh.nInfo.GrpcPort)
 }
 
 func (rh *RedisHost) MaybeIncFailed(err error) {
@@ -88,6 +97,7 @@ type PartitionAddrInfo struct {
 	Leader         string
 	Replicas       []string
 	ReplicasDCInfo []string
+	ReplicaInfos   []node
 	chosenIndex    uint32
 }
 
@@ -532,11 +542,13 @@ func (cluster *Cluster) tend() {
 
 		replicas := make([]string, 0)
 		dcInfos := make([]string, 0)
+		ninfos := make([]node, 0)
 		for _, n := range partNodeInfo.Replicas {
 			if n.BroadcastAddress != "" {
 				addr := net.JoinHostPort(n.BroadcastAddress, n.RedisPort)
 				replicas = append(replicas, addr)
 				dcInfos = append(dcInfos, n.DCInfo)
+				ninfos = append(ninfos, n)
 			}
 		}
 		node := partNodeInfo.Leader
@@ -559,7 +571,11 @@ func (cluster *Cluster) tend() {
 			levelLog.Infof("no any replicas for partition : %v", partID, partNodeInfo)
 			return
 		}
-		pinfo := PartitionAddrInfo{Leader: leaderAddr, Replicas: replicas, ReplicasDCInfo: dcInfos}
+		pinfo := PartitionAddrInfo{Leader: leaderAddr,
+			Replicas:       replicas,
+			ReplicasDCInfo: dcInfos,
+			ReplicaInfos:   ninfos,
+		}
 		pinfo.chosenIndex = atomic.LoadUint32(&oldPartInfo.chosenIndex)
 		newPartitions.PList[partID] = pinfo
 		levelLog.Infof("namespace %v partition %v replicas changed to : %v", cluster.namespace, partID, pinfo)
@@ -605,7 +621,10 @@ func (cluster *Cluster) tend() {
 			if ok {
 				continue
 			}
-			newNode := &RedisHost{addr: replica, dcInfo: partInfo.ReplicasDCInfo[idx]}
+			newNode := &RedisHost{addr: replica,
+				dcInfo: partInfo.ReplicasDCInfo[idx],
+				nInfo:  partInfo.ReplicaInfos[idx],
+			}
 			maxActive := DEFAULT_CONN_POOL_SIZE
 			if cluster.conf.MaxActiveConn > 0 {
 				maxActive = cluster.conf.MaxActiveConn
@@ -621,7 +640,8 @@ func (cluster *Cluster) tend() {
 			if tmpConn != nil {
 				tmpConn.Close()
 			}
-			levelLog.Infof("host:%v is available and come into service", newNode.addr+"@"+newNode.dcInfo)
+			levelLog.Infof("host:%v is available and come into service: %v",
+				newNode.addr+"@"+newNode.dcInfo, newNode.nInfo)
 			nodes[replica] = newNode
 		}
 	}
