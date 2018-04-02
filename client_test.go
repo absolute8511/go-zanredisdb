@@ -298,3 +298,125 @@ func TestClientPipeline(t *testing.T) {
 		}
 	}
 }
+
+func TestClientScan(t *testing.T) {
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
+	zanClient := NewZanRedisClient(conf)
+	zanClient.Start()
+	defer zanClient.Stop()
+	time.Sleep(time.Second)
+
+	testTable := "unittest2"
+
+	partNum := zanClient.cluster.GetPartitionNum()
+	mutipleKeysNum := []int{partNum - 2, partNum, partNum * 5}
+	// clean old data
+	recvCh := zanClient.AdvScanChannel("kv", testTable, nil)
+	cnt := 0
+	for k := range recvCh {
+		t.Logf("advscan clean key: %v", string(k))
+		delCnt, err := zanClient.KVDel(testTable, k)
+		if err != nil {
+			t.Errorf("del failed: %v", err)
+		}
+		if delCnt != 1 {
+			t.Errorf("del failed: %v", delCnt)
+			return
+		}
+		cnt++
+	}
+
+	for _, keysNum := range mutipleKeysNum {
+		if keysNum < 0 {
+			keysNum = 1
+		}
+
+		testPrefix := "rw" + strconv.FormatUint(rand.New(rand.NewSource(time.Now().Unix())).Uint64(), 36)
+		testKeys := make([]*PKey, 0, keysNum)
+		testValues := make([][]byte, 0, keysNum)
+		var writePipelines PipelineCmdList
+
+		for i := 0; i < keysNum; i++ {
+			pk := NewPKey(conf.Namespace, testTable, []byte(testPrefix+strconv.Itoa(i)))
+			testKeys = append(testKeys, pk)
+			t.Logf("write key: %v", string(pk.String()))
+			rawKey := pk.RawKey
+			testValue := pk.ShardingKey()
+			writePipelines.Add("SET", pk.ShardingKey(), true, rawKey, testValue)
+			testValues = append(testValues, testValue)
+		}
+		rsps, errs := zanClient.FlushAndWaitPipelineCmd(writePipelines)
+		if len(rsps) != len(writePipelines) {
+			t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(writePipelines))
+		}
+		t.Logf("test values: %v", len(testValues))
+		for i, rsp := range rsps {
+			if errs[i] != nil {
+				t.Errorf("rsp error: %v", errs[i])
+			}
+			_, err := redis.String(rsp, errs[i])
+			if err != nil {
+				t.Error(err)
+			}
+		}
+
+		cur, scanKeys, err := zanClient.AdvScan("kv", testTable, len(testKeys), nil)
+		if err != nil {
+			t.Error(err)
+		}
+		if len(scanKeys) != len(testKeys) && len(cur) == 0 {
+			t.Errorf("advscan keys mismatch:%v, %v, %v", string(cur), len(scanKeys), len(testKeys))
+		}
+		recvCh := zanClient.AdvScanChannel("kv", testTable, nil)
+		cnt := 0
+		for k := range recvCh {
+			t.Logf("advscan key: %v", string(k))
+			cnt++
+		}
+		if len(testKeys) != cnt {
+			t.Errorf("advscan keys mismatch: %v, %v", cnt, len(testKeys))
+		}
+
+		cur, scanKVs, err := zanClient.FullScan("kv", testTable, len(testKeys), nil)
+		if err != nil {
+			t.Error(err)
+		}
+		if len(scanKVs) != len(testKeys) && len(cur) == 0 {
+			t.Errorf("fullscan keys mismatch: %v, %v, %v", string(cur), len(scanKVs), len(testKeys))
+		}
+		recvKVCh := zanClient.FullScanChannel("kv", testTable, nil)
+		cnt = 0
+		for k := range recvKVCh {
+			items := k.([]interface{})
+			for _, item := range items {
+				kv := item.([]interface{})
+				t.Logf("fullscan key: %v", string(kv[0].([]byte)))
+				cnt++
+			}
+		}
+		if len(testKeys) != cnt {
+			t.Errorf("fullscan keys mismatch: %v, %v", cnt, len(testKeys))
+		}
+
+		var delPipelines PipelineCmdList
+		for i := 0; i < len(testKeys); i++ {
+			delPipelines.Add("DEL", testKeys[i].ShardingKey(), true, testKeys[i].RawKey)
+		}
+		rsps, errs = zanClient.FlushAndWaitPipelineCmd(delPipelines)
+		if len(rsps) != len(delPipelines) {
+			t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(delPipelines))
+		}
+	}
+}

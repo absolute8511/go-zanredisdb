@@ -16,6 +16,21 @@ const (
 	MIN_RETRY_SLEEP = time.Millisecond * 16
 )
 
+func filterDuplicateConn(conns []redis.Conn) []redis.Conn {
+	newConns := make([]redis.Conn, 0, len(conns))
+	scanned := make(map[string]bool)
+	for _, c := range conns {
+		_, ok := scanned[c.RemoteAddrStr()]
+		if ok {
+			continue
+		}
+		scanned[c.RemoteAddrStr()] = true
+		newConns = append(newConns, c)
+	}
+
+	return newConns
+}
+
 type PipelineCmd struct {
 	CmdName     string
 	ShardingKey []byte
@@ -273,10 +288,10 @@ func (self *ZanRedisClient) KVSet(set string, key []byte, value []byte) error {
 	return err
 }
 
-func (self *ZanRedisClient) KVDel(set string, key []byte, value []byte) error {
+func (self *ZanRedisClient) KVDel(set string, key []byte) (int, error) {
 	pk := NewPKey(self.conf.Namespace, set, key)
-	_, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
-	return err
+	cnt, err := redis.Int(self.DoRedis("DEL", pk.ShardingKey(), true, pk.RawKey))
+	return cnt, err
 }
 
 func (self *ZanRedisClient) getPipelinesFromKeys(cmdName string, readLeader bool, pKeys ...*PKey) (int, []int, PipelineCmdList, error) {
@@ -455,6 +470,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 		retry++
 		if len(cursor) == 0 {
 			conns, err = client.cluster.GetConnsForAllParts()
+			conns = filterDuplicateConn(conns)
 		} else {
 			decodedCursor, err := base64.StdEncoding.DecodeString(string(cursor))
 			if err != nil {
@@ -489,7 +505,11 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 		for i, c := range conns {
 			wg.Add(1)
 			go func(index int, c redis.Conn) {
-				defer wg.Done()
+				cnt := 0
+				defer func() {
+					levelLog.Infof("scan done on do scan :%v, cnt: %v", c.RemoteAddrStr(), cnt)
+					wg.Done()
+				}()
 				mutex.Lock()
 				cur := connCursorMap[c.RemoteAddrStr()]
 				mutex.Unlock()
@@ -500,6 +520,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 				tmp.WriteString(":")
 				tmp.WriteString(cur)
 				ay, err := redis.Values(c.Do(cmd, tmp.Bytes(), tp, "count", count))
+
 				if err == nil &&
 					len(ay) == 2 {
 					originCursor := ay[0].([]byte)
@@ -511,6 +532,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 						ay[0] = cursor
 					}
 					rsps[index] = ay
+					cnt += len(ay[1].([]interface{}))
 				}
 			}(i, c)
 		}
@@ -562,6 +584,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, stopC chan stru
 		for retry < 3 {
 			retry++
 			conns, err = client.cluster.GetConnsForAllParts()
+			conns = filterDuplicateConn(conns)
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
 				select {
@@ -576,13 +599,16 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, stopC chan stru
 			for _, c := range conns {
 				wg.Add(1)
 				go func(c redis.Conn) {
+					cnt := 0
 					defer func() {
-						wg.Done()
+						levelLog.Infof("scan done on do scan channel:%v, cnt: %v", c.RemoteAddrStr(), cnt)
 						if err := recover(); err != nil {
 							levelLog.Errorf("scan panic error. [err=%v]\n", err)
 						}
+						wg.Done()
 					}()
 					cursor := []byte("")
+					levelLog.Infof("scan on :%v", c.RemoteAddrStr())
 
 					var tmp bytes.Buffer
 					for {
@@ -609,6 +635,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, stopC chan stru
 							case <-stopC:
 								break
 							case ch <- val:
+								cnt++
 							}
 						}
 
@@ -641,6 +668,7 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string, stopC chan struc
 		for retry < 3 {
 			retry++
 			conns, err = client.cluster.GetConnsForAllParts()
+			conns = filterDuplicateConn(conns)
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
 				select {
@@ -657,10 +685,11 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string, stopC chan struc
 				wg.Add(1)
 				go func(c redis.Conn) {
 					defer func() {
-						wg.Done()
+						//levelLog.Infof("scan done on :%v, cnt: %v", c.RemoteAddrStr(), cnt)
 						if err := recover(); err != nil {
 							levelLog.Errorf("full scan error. [err=%v]\n", err)
 						}
+						wg.Done()
 					}()
 					cursor := []byte("")
 
@@ -721,6 +750,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 
 		if len(cursor) == 0 {
 			conns, err = client.cluster.GetConnsForAllParts()
+			conns = filterDuplicateConn(conns)
 		} else {
 			decodedCursor, err := base64.StdEncoding.DecodeString(string(cursor))
 			if err != nil {
@@ -756,7 +786,11 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 		for i, c := range conns {
 			wg.Add(1)
 			go func(index int, c redis.Conn) {
-				defer wg.Done()
+				cnt := 0
+				defer func() {
+					levelLog.Infof("scan done on dofull scan :%v, cnt: %v", c.RemoteAddrStr(), cnt)
+					wg.Done()
+				}()
 				cur := connCursorMap[c.RemoteAddrStr()]
 				var tmp bytes.Buffer
 				tmp.WriteString(ns)
@@ -776,6 +810,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 						ay[0] = cursor
 					}
 					rsps[index] = ay
+					cnt += len(ay[1].([]interface{}))
 				}
 			}(i, c)
 		}
