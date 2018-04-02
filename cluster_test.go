@@ -10,7 +10,7 @@ import (
 	"github.com/absolute8511/redigo/redis"
 )
 
-var pdAddr = "127.0.0.1:18001"
+var pdAddr = "qabb-qa-zankv0:18001"
 var testNS = "yz_test_p4"
 
 type testLogger struct {

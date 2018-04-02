@@ -14,7 +14,8 @@ import (
 
 var ip = flag.String("ip", "127.0.0.1", "pd server ip")
 var port = flag.Int("port", 18001, "pd server port")
-var checkMode = flag.String("mode", "check-list", "supported check-list/fix-list")
+var checkMode = flag.String("mode", "", "supported check-list/fix-list/dump-keys")
+var dataType = flag.String("data-type", "kv", "data type support kv/hash/list/zset/set")
 var namespace = flag.String("namespace", "default", "the prefix namespace")
 var table = flag.String("table", "test", "the table to write")
 var sleep = flag.Duration("sleep", time.Microsecond, "how much to sleep every 100 keys during scan")
@@ -55,7 +56,7 @@ func checkList(tryFix bool, c *zanredisdb.ZanRedisClient) {
 	defer func() {
 		log.Printf("list total checked %v,  mimatch %v", cnt, wrongKeys)
 	}()
-	log.Printf("list begin checking")
+	log.Printf("begin checking")
 	for k := range ch {
 		cnt++
 		if cnt > *maxNum {
@@ -100,6 +101,33 @@ func checkList(tryFix bool, c *zanredisdb.ZanRedisClient) {
 	}
 }
 
+func dumpKeys(c *zanredisdb.ZanRedisClient) {
+	stopC := make(chan struct{})
+	defer close(stopC)
+	if *dataType != "kv" && *dataType != "hash" && *dataType != "list" && *dataType != "set" && *dataType != "zset" {
+		log.Printf("data type not supported %v\n", *dataType)
+		return
+	}
+	ch := c.AdvScanChannel(*dataType, *table, stopC)
+	cnt := int64(0)
+	defer func() {
+		log.Printf("total scanned %v", cnt)
+	}()
+	log.Printf("begin checking")
+	for k := range ch {
+		cnt++
+		if cnt > *maxNum {
+			break
+		}
+		if cnt%100 == 0 {
+			if *sleep > 0 {
+				time.Sleep(*sleep)
+			}
+		}
+		log.Printf("%s\n", string(k))
+	}
+}
+
 func main() {
 	flag.Parse()
 	zanredisdb.SetLogger(1, zanredisdb.NewSimpleLogger())
@@ -123,6 +151,8 @@ func main() {
 			checkList(false, c)
 		case "fix-list":
 			checkList(true, c)
+		case "dump-keys":
+			dumpKeys(c)
 		default:
 			log.Printf("unknown check mode: %v", mode)
 		}
