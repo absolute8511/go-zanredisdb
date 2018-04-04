@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	DEFAULT_CONN_POOL_SIZE = 100
+	DefaultConnPoolMaxActive = 400
+	DefaultConnPoolMaxIdle   = 3
 )
 
 var (
@@ -169,6 +170,7 @@ func NewCluster(conf *Conf) *Cluster {
 	copy(cluster.LookupList, conf.LookupList)
 
 	cluster.dialF = func(addr string) (redis.Conn, error) {
+		levelLog.Infof("new conn dial to : %v", addr)
 		return redis.Dial("tcp", addr, redis.DialConnectTimeout(conf.DialTimeout),
 			redis.DialReadTimeout(conf.ReadTimeout),
 			redis.DialWriteTimeout(conf.WriteTimeout),
@@ -625,12 +627,16 @@ func (cluster *Cluster) tend() {
 				dcInfo: partInfo.ReplicasDCInfo[idx],
 				nInfo:  partInfo.ReplicaInfos[idx],
 			}
-			maxActive := DEFAULT_CONN_POOL_SIZE
+			maxActive := DefaultConnPoolMaxActive
+			maxIdle := DefaultConnPoolMaxIdle
 			if cluster.conf.MaxActiveConn > 0 {
 				maxActive = cluster.conf.MaxActiveConn
 			}
+			if cluster.conf.MaxIdleConn > 0 {
+				maxIdle = cluster.conf.MaxIdleConn
+			}
 			newNode.connPool = redis.NewQueuePool(func() (redis.Conn, error) { return cluster.dialF(newNode.addr) },
-				cluster.conf.MaxIdleConn, maxActive)
+				maxIdle, maxActive)
 			newNode.connPool.IdleTimeout = 120 * time.Second
 			newNode.connPool.TestOnBorrow = testF
 			if cluster.conf.IdleTimeout > time.Second {

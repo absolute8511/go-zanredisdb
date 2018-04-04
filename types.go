@@ -45,10 +45,11 @@ type Conf struct {
 	WriteTimeout  time.Duration
 	IdleTimeout   time.Duration
 	MaxActiveConn int
-	MaxIdleConn   int
-	TendInterval  int64
-	Namespace     string
-	Password      string
+	// idle num that will be kept for all idle connections
+	MaxIdleConn  int
+	TendInterval int64
+	Namespace    string
+	Password     string
 	// the datacenter info
 	DC string
 }
