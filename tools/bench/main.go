@@ -507,7 +507,7 @@ func benchSAdd() {
 		pk := n / subKeyCnt
 		tmp := fmt.Sprintf("%010d", int(pk))
 		subkey := n - pk*subKeyCnt
-		return doCommand(c, "SADD", "myzsetkey"+tmp, subkey)
+		return doCommand(c, "SADD", "mysetkey"+tmp, subkey)
 	}
 	bench("sadd", f)
 }
@@ -520,10 +520,23 @@ func benchSRem() {
 		pk := n / subKeyCnt
 		tmp := fmt.Sprintf("%010d", int(pk))
 		subkey := n - pk*subKeyCnt
-		return doCommand(c, "SREM", "myzsetkey"+tmp, subkey)
+		return doCommand(c, "SREM", "mysetkey"+tmp, subkey)
 	}
 
 	bench("srem", f)
+}
+
+func benchSClear() {
+	atomic.StoreInt64(&setPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&setDelBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "SCLEAR", "mysetkey"+tmp)
+	}
+
+	bench("sclear", f)
 }
 
 func benchSIsMember() {
@@ -534,10 +547,23 @@ func benchSIsMember() {
 		pk := n / subKeyCnt
 		tmp := fmt.Sprintf("%010d", int(pk))
 		subkey := n - pk*subKeyCnt
-		return doCommand(c, "SISMEMBER", "myhashkey"+tmp, subkey)
+		return doCommand(c, "SISMEMBER", "mysetkey"+tmp, subkey)
 	}
 
 	bench("sismember", f)
+}
+
+func benchSMembers() {
+	atomic.StoreInt64(&setPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := int64(rand.Int() % *number)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "SMEMBERS", "mysetkey"+tmp)
+	}
+
+	bench("smembers", f)
 }
 
 var zsetPKBase int64
@@ -707,6 +733,10 @@ func main() {
 				benchSRem()
 			case "sismember":
 				benchSIsMember()
+			case "smembers":
+				benchSMembers()
+			case "sclear":
+				benchSClear()
 			case "zadd":
 				benchZAdd()
 			case "zrange":
