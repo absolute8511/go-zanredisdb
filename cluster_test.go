@@ -10,7 +10,7 @@ import (
 	"github.com/absolute8511/redigo/redis"
 )
 
-var pdAddr = "qabb-qa-zankv0:18001"
+var pdAddr = "127.0.0.1:18001"
 var testNS = "yz_test_p4"
 
 type testLogger struct {
@@ -55,7 +55,7 @@ func TestClusterInfo(t *testing.T) {
 	if nodeNum != len(cluster.getPartitions().PList) {
 		t.Fatal("cluster nodes should not changed")
 	}
-	conn, err := cluster.GetConn([]byte("11"), true)
+	conn, err := cluster.GetConn([]byte("11"), true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestClusterReadWrite(t *testing.T) {
 	}
 	for i := 0; i < 10; i++ {
 		pk := NewPKey(conf.Namespace, "unittest", []byte("rw11"+strconv.Itoa(i)))
-		conn, err := cluster.GetConn(pk.ShardingKey(), true)
+		conn, err := cluster.GetConn(pk.ShardingKey(), true, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func BenchmarkGetNodePool(b *testing.B) {
 			defer wg.Done()
 			for i := 0; i < b.N; i++ {
 				pk := NewPKey(conf.Namespace, "unittest", []byte("rw11"+strconv.Itoa(i)))
-				conn, err := cluster.GetConn(pk.ShardingKey(), true)
+				conn, err := cluster.GetConn(pk.ShardingKey(), true, false)
 				if err != nil {
 					b.Error(err)
 					break

@@ -39,17 +39,20 @@ func IsFailedOnNotWritable(err error) bool {
 }
 
 type Conf struct {
-	LookupList    []string
-	DialTimeout   time.Duration
-	ReadTimeout   time.Duration
-	WriteTimeout  time.Duration
-	IdleTimeout   time.Duration
-	MaxActiveConn int
+	LookupList       []string
+	DialTimeout      time.Duration
+	ReadTimeout      time.Duration
+	RangeReadTimeout time.Duration
+	WriteTimeout     time.Duration
+	IdleTimeout      time.Duration
+	MaxActiveConn    int
 	// idle num that will be kept for all idle connections
-	MaxIdleConn  int
-	TendInterval int64
-	Namespace    string
-	Password     string
+	MaxIdleConn int
+	// default 0.4
+	RangeConnRatio float64
+	TendInterval   int64
+	Namespace      string
+	Password       string
 	// the datacenter info
 	DC string
 }

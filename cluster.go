@@ -46,6 +46,75 @@ type RedisHost struct {
 	lastFailedCnt int64
 	lastFailedTs  int64
 	connPool      *redis.QueuePool
+	// connection for range query such as scan/lrange/smembers/zrange
+	rangeConnPool *redis.QueuePool
+}
+
+func (rh *RedisHost) InitConnPool(
+	newFn func() (redis.Conn, error),
+	newRangeFn func() (redis.Conn, error),
+	testBorrow func(redis.Conn, time.Time) error,
+	conf *Conf) {
+	maxActive := DefaultConnPoolMaxActive
+	maxIdle := DefaultConnPoolMaxIdle
+	if conf.MaxActiveConn > 0 {
+		maxActive = conf.MaxActiveConn
+	}
+	if conf.MaxIdleConn > 0 {
+		maxIdle = conf.MaxIdleConn
+	}
+	rh.connPool = redis.NewQueuePool(newFn, maxIdle, maxActive)
+	rh.connPool.IdleTimeout = 120 * time.Second
+	rh.connPool.TestOnBorrow = testBorrow
+	if conf.IdleTimeout > time.Second {
+		rh.connPool.IdleTimeout = conf.IdleTimeout
+	}
+	tmpConn, _ := rh.connPool.Get(0)
+	if tmpConn != nil {
+		tmpConn.Close()
+	}
+	ratio := conf.RangeConnRatio
+	if ratio < 0.01 {
+		ratio = 0.4
+	}
+	maxIdle = int(float64(maxIdle) * ratio)
+	if maxIdle < 1 {
+		maxIdle = 1
+	}
+	maxActive = int(float64(maxActive) * ratio)
+	if maxActive < 1 {
+		maxActive = 1
+	}
+	rh.rangeConnPool = redis.NewQueuePool(newRangeFn,
+		maxIdle,
+		maxActive,
+	)
+	rh.rangeConnPool.IdleTimeout = 120 * time.Second
+	rh.rangeConnPool.TestOnBorrow = testBorrow
+	if conf.IdleTimeout > time.Second {
+		rh.rangeConnPool.IdleTimeout = conf.IdleTimeout
+	}
+	tmpConn, _ = rh.rangeConnPool.Get(0)
+	if tmpConn != nil {
+		tmpConn.Close()
+	}
+}
+
+func (rh *RedisHost) CloseConn() {
+	rh.connPool.Close()
+	rh.rangeConnPool.Close()
+}
+
+func (rh *RedisHost) Refresh() {
+	rh.connPool.Refresh()
+	rh.rangeConnPool.Refresh()
+}
+
+func (rh *RedisHost) ConnPool(isRangeQuery bool) *redis.QueuePool {
+	if isRangeQuery {
+		return rh.rangeConnPool
+	}
+	return rh.connPool
 }
 
 func (rh *RedisHost) Addr() string {
@@ -150,6 +219,7 @@ type Cluster struct {
 	tendTrigger  chan int
 
 	dialF            func(string) (redis.Conn, error)
+	dialRangeF       func(string) (redis.Conn, error)
 	choseSameDCFirst int32
 }
 
@@ -177,7 +247,18 @@ func NewCluster(conf *Conf) *Cluster {
 			redis.DialPassword(conf.Password),
 		)
 	}
-
+	cluster.dialRangeF = func(addr string) (redis.Conn, error) {
+		levelLog.Infof("new conn for range dial to : %v", addr)
+		rt := conf.RangeReadTimeout
+		if rt < time.Second {
+			rt = conf.ReadTimeout*10 + time.Second
+		}
+		return redis.Dial("tcp", addr, redis.DialConnectTimeout(conf.DialTimeout),
+			redis.DialReadTimeout(rt),
+			redis.DialWriteTimeout(conf.WriteTimeout),
+			redis.DialPassword(conf.Password),
+		)
+	}
 	cluster.tend()
 
 	//if len(cluster.nodes) == 0 {
@@ -350,25 +431,25 @@ func (cluster *Cluster) GetNodeHost(pk []byte, leader bool) (*RedisHost, error) 
 	return picked, nil
 }
 
-func (cluster *Cluster) GetConn(pk []byte, leader bool) (redis.Conn, error) {
+func (cluster *Cluster) GetConn(pk []byte, leader bool, isRangeQuery bool) (redis.Conn, error) {
 	picked, err := cluster.GetNodeHost(pk, leader)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := picked.connPool.Get(0)
+	conn, err := picked.ConnPool(isRangeQuery).Get(0)
 	return conn, err
 }
 
-func (cluster *Cluster) GetHostAndConn(pk []byte, leader bool) (*RedisHost, redis.Conn, error) {
+func (cluster *Cluster) GetHostAndConn(pk []byte, leader bool, isRangeQuery bool) (*RedisHost, redis.Conn, error) {
 	picked, err := cluster.GetNodeHost(pk, leader)
 	if err != nil {
 		return nil, nil, err
 	}
-	conn, err := picked.connPool.Get(0)
+	conn, err := picked.ConnPool(isRangeQuery).Get(0)
 	return picked, conn, err
 }
 
-func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {
+func (cluster *Cluster) getConnsByHosts(hosts []string, isRangeQuery bool) ([]redis.Conn, error) {
 	parts := cluster.getPartitions()
 	if parts == nil {
 		return nil, errNoAnyPartitions
@@ -378,7 +459,7 @@ func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {
 	var conns []redis.Conn
 	for _, h := range hosts {
 		if v, ok := nodes[h]; ok {
-			conn, err := v.connPool.Get(0)
+			conn, err := v.ConnPool(isRangeQuery).Get(0)
 			if err != nil {
 				return nil, err
 			}
@@ -390,7 +471,7 @@ func (cluster *Cluster) getConnsByHosts(hosts []string) ([]redis.Conn, error) {
 	return conns, nil
 }
 
-func (cluster *Cluster) GetConnsForAllParts() ([]redis.Conn, error) {
+func (cluster *Cluster) GetConnsForAllParts(isRangeQuery bool) ([]redis.Conn, error) {
 	parts := cluster.getPartitions()
 	if parts == nil {
 		return nil, errNoAnyPartitions
@@ -403,7 +484,7 @@ func (cluster *Cluster) GetConnsForAllParts() ([]redis.Conn, error) {
 		if p.Leader == nil {
 			return nil, errors.New("no leader for partition")
 		}
-		conn, err := p.Leader.connPool.Get(0)
+		conn, err := p.Leader.ConnPool(isRangeQuery).Get(0)
 		if err != nil {
 			return nil, err
 		}
@@ -412,8 +493,8 @@ func (cluster *Cluster) GetConnsForAllParts() ([]redis.Conn, error) {
 	return conns, nil
 }
 
-func (cluster *Cluster) GetConnsByHosts(hosts []string) ([]redis.Conn, error) {
-	return cluster.getConnsByHosts(hosts)
+func (cluster *Cluster) GetConnsByHosts(hosts []string, isRangeQuery bool) ([]redis.Conn, error) {
+	return cluster.getConnsByHosts(hosts, isRangeQuery)
 }
 
 func (cluster *Cluster) nextLookupEndpoint(epoch int64) (string, string, string) {
@@ -627,25 +708,12 @@ func (cluster *Cluster) tend() {
 				dcInfo: partInfo.ReplicasDCInfo[idx],
 				nInfo:  partInfo.ReplicaInfos[idx],
 			}
-			maxActive := DefaultConnPoolMaxActive
-			maxIdle := DefaultConnPoolMaxIdle
-			if cluster.conf.MaxActiveConn > 0 {
-				maxActive = cluster.conf.MaxActiveConn
-			}
-			if cluster.conf.MaxIdleConn > 0 {
-				maxIdle = cluster.conf.MaxIdleConn
-			}
-			newNode.connPool = redis.NewQueuePool(func() (redis.Conn, error) { return cluster.dialF(newNode.addr) },
-				maxIdle, maxActive)
-			newNode.connPool.IdleTimeout = 120 * time.Second
-			newNode.connPool.TestOnBorrow = testF
-			if cluster.conf.IdleTimeout > time.Second {
-				newNode.connPool.IdleTimeout = cluster.conf.IdleTimeout
-			}
-			tmpConn, _ := newNode.connPool.Get(0)
-			if tmpConn != nil {
-				tmpConn.Close()
-			}
+
+			newNode.InitConnPool(func() (redis.Conn, error) {
+				return cluster.dialF(newNode.addr)
+			}, func() (redis.Conn, error) {
+				return cluster.dialRangeF(newNode.addr)
+			}, testF, cluster.conf)
 			levelLog.Infof("host:%v is available and come into service: %v",
 				newNode.addr+"@"+newNode.dcInfo, newNode.nInfo)
 			nodes[replica] = newNode
@@ -674,7 +742,7 @@ func (cluster *Cluster) tend() {
 	}
 	cluster.setPartitions(newHostPartitions)
 	for _, p := range cleanHosts {
-		p.connPool.Close()
+		p.CloseConn()
 	}
 }
 
@@ -692,7 +760,7 @@ func (cluster *Cluster) tendNodes() {
 
 			nodes := getNodesFromParts(cluster.getPartitions())
 			for _, n := range nodes {
-				n.connPool.Refresh()
+				n.Refresh()
 			}
 
 		case <-cluster.tendTrigger:
@@ -702,7 +770,7 @@ func (cluster *Cluster) tendNodes() {
 		case <-cluster.quitC:
 			nodes := getNodesFromParts(cluster.getPartitions())
 			for _, node := range nodes {
-				node.connPool.Close()
+				node.CloseConn()
 			}
 			levelLog.Debugf("go routine for tend cluster exit")
 			return

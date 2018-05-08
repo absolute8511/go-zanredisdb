@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -227,10 +228,11 @@ func (self *ZanRedisClient) DoRedis(cmd string, shardingKey []byte, toLeader boo
 	if ro == 0 {
 		ro = time.Second
 	}
+	isRangeQuery := IsRangeCmd(cmd)
 	for retry < 3 || time.Since(reqStart) < ro {
 		retry++
 		retryStart := time.Now()
-		redisHost, conn, err = self.cluster.GetHostAndConn(shardingKey, toLeader)
+		redisHost, conn, err = self.cluster.GetHostAndConn(shardingKey, toLeader, isRangeQuery)
 		cost1 := time.Since(retryStart)
 		if cost1 > time.Millisecond*100 {
 			levelLog.Infof("command %v-%v slow to get conn, cost: %v", cmd, string(shardingKey), cost1)
@@ -469,7 +471,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 	for retry < 3 {
 		retry++
 		if len(cursor) == 0 {
-			conns, err = client.cluster.GetConnsForAllParts()
+			conns, err = client.cluster.GetConnsForAllParts(true)
 			conns = filterDuplicateConn(conns)
 		} else {
 			decodedCursor, err := base64.StdEncoding.DecodeString(string(cursor))
@@ -494,7 +496,7 @@ func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []by
 				hosts = append(hosts, string(splits[0]))
 				connCursorMap[string(splits[0])] = string(splits[1])
 			}
-			conns, err = client.cluster.GetConnsByHosts(hosts)
+			conns, err = client.cluster.GetConnsByHosts(hosts, true)
 		}
 		if err != nil {
 			client.cluster.MaybeTriggerCheckForError(err, 0)
@@ -583,7 +585,7 @@ func (client *ZanRedisClient) DoScanChannel(cmd, tp, set string, stopC chan stru
 		ns := client.conf.Namespace
 		for retry < 3 {
 			retry++
-			conns, err = client.cluster.GetConnsForAllParts()
+			conns, err = client.cluster.GetConnsForAllParts(true)
 			conns = filterDuplicateConn(conns)
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
@@ -667,7 +669,7 @@ func (client *ZanRedisClient) DoFullScanChannel(tp, set string, stopC chan struc
 		ns := client.conf.Namespace
 		for retry < 3 {
 			retry++
-			conns, err = client.cluster.GetConnsForAllParts()
+			conns, err = client.cluster.GetConnsForAllParts(true)
 			conns = filterDuplicateConn(conns)
 			if err != nil {
 				client.cluster.MaybeTriggerCheckForError(err, 0)
@@ -749,7 +751,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 		retry++
 
 		if len(cursor) == 0 {
-			conns, err = client.cluster.GetConnsForAllParts()
+			conns, err = client.cluster.GetConnsForAllParts(true)
 			conns = filterDuplicateConn(conns)
 		} else {
 			decodedCursor, err := base64.StdEncoding.DecodeString(string(cursor))
@@ -774,7 +776,7 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 				hosts = append(hosts, string(splits[0]))
 				connCursorMap[string(splits[0])] = string(splits[1])
 			}
-			conns, err = client.cluster.GetConnsByHosts(hosts)
+			conns, err = client.cluster.GetConnsByHosts(hosts, true)
 		}
 		if err != nil {
 			client.cluster.MaybeTriggerCheckForError(err, 0)
@@ -839,4 +841,27 @@ func (client *ZanRedisClient) DoFullScan(cmd, tp, set string, count int, cursor 
 	base64.StdEncoding.Encode(encodedCursor, newCursor)
 
 	return encodedCursor, result, err
+}
+
+func IsRangeCmd(cmd string) bool {
+	lcmd := strings.ToLower(cmd)
+	if _, ok := slowCmds[lcmd]; ok {
+		return true
+	}
+	cmdLen := len(cmd)
+	if cmdLen >= 4 && (lcmd[cmdLen-4:] == "scan") {
+		return true
+	}
+	if cmdLen >= len("revrange") && strings.Contains(lcmd, "revrange") {
+		return true
+	}
+	return false
+}
+
+var slowCmds = map[string]bool{
+	"hgetall":  true,
+	"hkeys":    true,
+	"hvals":    true,
+	"keys":     true,
+	"smembers": true,
 }
