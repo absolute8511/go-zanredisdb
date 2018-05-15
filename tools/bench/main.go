@@ -526,6 +526,19 @@ func benchSRem() {
 	bench("srem", f)
 }
 
+func benchSPop() {
+	atomic.StoreInt64(&setPKBase, 0)
+	subKeyCnt := int64(*number / (*primaryKeyCnt))
+	f := func(c *zanredisdb.ZanRedisClient) error {
+		n := atomic.AddInt64(&setDelBase, 1)
+		pk := n / subKeyCnt
+		tmp := fmt.Sprintf("%010d", int(pk))
+		return doCommand(c, "SPOP", "mysetkey"+tmp)
+	}
+
+	bench("spop", f)
+}
+
 func benchSClear() {
 	atomic.StoreInt64(&setPKBase, 0)
 	subKeyCnt := int64(*number / (*primaryKeyCnt))
@@ -731,6 +744,8 @@ func main() {
 				benchSAdd()
 			case "srem":
 				benchSRem()
+			case "spop":
+				benchSPop()
 			case "sismember":
 				benchSIsMember()
 			case "smembers":
