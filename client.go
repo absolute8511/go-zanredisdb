@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -435,28 +436,145 @@ func (client *ZanRedisClient) KVScan(set string, count int, cursor []byte) ([]by
 	return client.DoScan("SCAN", "KV", set, count, cursor)
 }
 
-func (client *ZanRedisClient) HScanChannel(set string, stopC chan struct{}) chan []byte {
-	return client.DoScanChannel("HSCAN", "HASH", set, stopC)
+func (client *ZanRedisClient) doSubScan(cmd, set string, key []byte, count int, cursor []byte) ([]byte, [][]byte, error) {
+	pk := NewPKey(client.conf.Namespace, set, key)
+	rsp, err := redis.Values(client.DoRedis(cmd, pk.ShardingKey(), true, pk.RawKey, cursor, "count", count))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(rsp) != 2 {
+		return nil, nil, errors.New("invalid response")
+	}
+
+	cursor, ok := rsp[0].([]byte)
+	if !ok {
+		return nil, nil, errors.New("invalid response")
+	}
+	vals, ok := rsp[1].([]interface{})
+	if !ok {
+		return nil, nil, errors.New("invalid response")
+	}
+	elems := make([][]byte, 0, len(vals))
+	for _, v := range vals {
+		e, ok := v.([]byte)
+		if !ok {
+			return nil, nil, errors.New("invalid response")
+		}
+		elems = append(elems, e)
+	}
+	return cursor, elems, nil
 }
 
-func (client *ZanRedisClient) HScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("HSCAN", "HASH", set, count, cursor)
+func (client *ZanRedisClient) doSubScanChannel(cmd, set string, key []byte, stopC chan struct{}) chan []byte {
+	retCh := make(chan []byte, 100)
+	go func() {
+		cursor := []byte("")
+		var elems [][]byte
+		var err error
+		defer func() {
+			close(retCh)
+		}()
+		for {
+			cursor, elems, err = client.doSubScan(cmd, set, key, 50, cursor)
+			if err != nil {
+				levelLog.Warningf("scan error:%v", err.Error())
+				break
+			}
+			for _, e := range elems {
+				select {
+				case retCh <- e:
+				case <-stopC:
+					break
+				}
+			}
+			if len(cursor) == 0 {
+				break
+			}
+		}
+	}()
+	return retCh
 }
 
-func (client *ZanRedisClient) SScanChannel(set string, stopC chan struct{}) chan []byte {
-	return client.DoScanChannel("SSCAN", "SET", set, stopC)
+type HashElem struct {
+	Field []byte
+	Value []byte
 }
 
-func (client *ZanRedisClient) SScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("SSCAN", "SET", set, count, cursor)
+func (client *ZanRedisClient) HScanChannel(set string, key []byte, stopC chan struct{}) chan []byte {
+	return client.doSubScanChannel("HSCAN", set, key, stopC)
 }
 
-func (client *ZanRedisClient) ZScanChannel(set string, stopC chan struct{}) chan []byte {
-	return client.DoScanChannel("ZSCAN", "ZSET", set, stopC)
+func (client *ZanRedisClient) HScan(set string, key []byte, count int, cursor []byte) ([]byte, []HashElem, error) {
+	ncursor, fvs, err := client.doSubScan("HSCAN", set, key, count, cursor)
+	if err != nil {
+		return nil, nil, err
+	}
+	hes := make([]HashElem, 0, len(fvs)/2)
+	for i := 0; i < len(fvs)-1; i += 2 {
+		hes = append(hes, HashElem{fvs[i], fvs[i+1]})
+	}
+	return ncursor, hes, nil
 }
 
-func (client *ZanRedisClient) ZScan(set string, count int, cursor []byte) ([]byte, [][]byte, error) {
-	return client.DoScan("ZSCAN", "ZSET", set, count, cursor)
+func (client *ZanRedisClient) SScanChannel(set string, key []byte, stopC chan struct{}) chan []byte {
+	return client.doSubScanChannel("SSCAN", set, key, stopC)
+}
+
+func (client *ZanRedisClient) SScan(set string, key []byte, count int, cursor []byte) ([]byte, [][]byte, error) {
+	return client.doSubScan("SSCAN", set, key, count, cursor)
+}
+
+type ZSetElem struct {
+	Member []byte
+	Score  float64
+}
+
+func (client *ZanRedisClient) ZScanChannel(set string, key []byte, stopC chan struct{}) chan ZSetElem {
+	retCh := make(chan ZSetElem, 100)
+	go func() {
+		cursor := []byte("")
+		var elems []ZSetElem
+		var err error
+		defer func() {
+			close(retCh)
+		}()
+		for {
+			cursor, elems, err = client.ZScan(set, key, 50, cursor)
+			if err != nil {
+				levelLog.Warningf("scan error:%v", err.Error())
+				break
+			}
+			for _, e := range elems {
+				select {
+				case retCh <- e:
+				case <-stopC:
+					break
+				}
+			}
+			if len(cursor) == 0 {
+				break
+			}
+		}
+	}()
+	return retCh
+}
+
+func (client *ZanRedisClient) ZScan(set string, key []byte, count int, cursor []byte) ([]byte, []ZSetElem, error) {
+	ncursor, elems, err := client.doSubScan("ZSCAN", set, key, count, cursor)
+	if err != nil {
+		return nil, nil, err
+	}
+	zses := make([]ZSetElem, 0, len(elems)/2)
+	for i := 0; i < len(elems)-1; i += 2 {
+		var e ZSetElem
+		e.Member = elems[i]
+		e.Score, err = strconv.ParseFloat(string(elems[i+1]), 64)
+		if err != nil {
+			return nil, nil, err
+		}
+		zses = append(zses, e)
+	}
+	return ncursor, zses, nil
 }
 
 func (client *ZanRedisClient) DoScan(cmd, tp, set string, count int, cursor []byte) ([]byte, [][]byte, error) {

@@ -2,6 +2,7 @@ package zanredisdb
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"testing"
@@ -418,5 +419,285 @@ func TestClientScan(t *testing.T) {
 		if len(rsps) != len(delPipelines) {
 			t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(delPipelines))
 		}
+	}
+}
+
+func TestClientSScan(t *testing.T) {
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
+	zanClient := NewZanRedisClient(conf)
+	zanClient.Start()
+	defer zanClient.Stop()
+	time.Sleep(time.Second)
+
+	testTable := "unittest2-sscan"
+
+	testPrefix := "set-unittest-sscan"
+
+	pk := NewPKey(conf.Namespace, testTable, []byte(testPrefix))
+	rawKey := pk.RawKey
+	testValues := make([][]byte, 0)
+
+	var writePipelines PipelineCmdList
+	for i := 0; i < 100; i++ {
+		member := fmt.Sprintf("%04d", i)
+		t.Logf("write member: %v", string(member))
+		writePipelines.Add("SADD", pk.ShardingKey(), true, rawKey, member)
+		testValues = append(testValues, []byte(member))
+	}
+
+	rsps, errs := zanClient.FlushAndWaitPipelineCmd(writePipelines)
+	if len(rsps) != len(writePipelines) {
+		t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(writePipelines))
+	}
+	t.Logf("test values: %v", len(testValues))
+	for i, rsp := range rsps {
+		if errs[i] != nil {
+			t.Errorf("rsp error: %v", errs[i])
+		}
+		_, err := redis.Int64(rsp, errs[i])
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	vv, err := zanClient.DoRedis("SMEMBERS", pk.ShardingKey(), true, rawKey)
+	t.Logf("test members: %v", vv)
+
+	cur, scanMembers, err := zanClient.SScan(testTable, []byte(testPrefix), len(testValues), []byte(""))
+	if err != nil {
+		t.Error(err)
+	}
+	if len(scanMembers) != len(testValues) && len(cur) == 0 {
+		t.Errorf("members mismatch:%v, %v, %v", string(cur), len(scanMembers), len(testValues))
+	}
+	for i, m := range scanMembers {
+		if string(m) != string(testValues[i]) {
+			t.Errorf("members mismatch:%v, %v", m, testValues[i])
+		}
+	}
+	recvCh := zanClient.SScanChannel(testTable, []byte(testPrefix), nil)
+	cnt := 0
+	scanMembers = scanMembers[:0]
+	for k := range recvCh {
+		t.Logf("member key: %v", string(k))
+		cnt++
+		scanMembers = append(scanMembers, k)
+	}
+	if len(testValues) != cnt {
+		t.Errorf("mismatch: %v, %v", cnt, len(testValues))
+	}
+
+	for i, m := range scanMembers {
+		if string(m) != string(testValues[i]) {
+			t.Errorf("members mismatch:%v, %v, %v", m, testValues[i])
+		}
+	}
+	_, err = zanClient.DoRedis("SCLEAR", pk.ShardingKey(), true, pk.RawKey)
+	if err != nil {
+		t.Errorf("rsp err: %v", err)
+	}
+}
+func TestClientHScan(t *testing.T) {
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
+	zanClient := NewZanRedisClient(conf)
+	zanClient.Start()
+	defer zanClient.Stop()
+	time.Sleep(time.Second)
+
+	testTable := "unittest2-hscan"
+
+	testPrefix := "unittest-hscan-key"
+
+	pk := NewPKey(conf.Namespace, testTable, []byte(testPrefix))
+	rawKey := pk.RawKey
+	testValues := make([][]byte, 0)
+
+	var writePipelines PipelineCmdList
+	for i := 0; i < 10; i++ {
+		member := fmt.Sprintf("%04d", i)
+		t.Logf("write : %v", string(member))
+		writePipelines.Add("HSET", pk.ShardingKey(), true, rawKey, member, member)
+		testValues = append(testValues, []byte(member))
+	}
+
+	rsps, errs := zanClient.FlushAndWaitPipelineCmd(writePipelines)
+	if len(rsps) != len(writePipelines) {
+		t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(writePipelines))
+	}
+	t.Logf("test values: %v", len(testValues))
+	for i, rsp := range rsps {
+		if errs[i] != nil {
+			t.Errorf("rsp error: %v", errs[i])
+		}
+		_, err := redis.Int64(rsp, errs[i])
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	vv, err := zanClient.DoRedis("hgetall", pk.ShardingKey(), true, rawKey)
+	t.Logf("test fvs: %v", vv)
+
+	cur, scanRets, err := zanClient.HScan(testTable, []byte(testPrefix), len(testValues), []byte(""))
+	if err != nil {
+		t.Error(err)
+	}
+	if len(scanRets) != len(testValues) && len(cur) == 0 {
+		t.Errorf("scan mismatch:%v, %v, %v", string(cur), len(scanRets), len(testValues))
+	}
+	if len(scanRets) == len(testValues) {
+		for i, m := range scanRets {
+			if string(m.Field) != string(testValues[i]) {
+				t.Errorf("mismatch:%v, %v", m, testValues[i])
+			}
+			if string(m.Value) != string(testValues[i]) {
+				t.Errorf("mismatch:%v, %v", string(m.Value), testValues[i])
+			}
+		}
+	}
+	recvCh := zanClient.HScanChannel(testTable, []byte(testPrefix), nil)
+	cnt := 0
+	scanRets = scanRets[:0]
+	for k := range recvCh {
+		t.Logf("member key: %v", string(k))
+		cnt++
+		var he HashElem
+		he.Field = k
+		v := <-recvCh
+		he.Value = v
+		scanRets = append(scanRets, he)
+	}
+	if len(testValues) != cnt {
+		t.Errorf("mismatch: %v, %v", cnt, len(testValues))
+	}
+
+	for i, m := range scanRets {
+		if string(m.Field) != string(testValues[i]) {
+			t.Errorf("mismatch:%v, %v", m, testValues[i])
+		}
+		if string(m.Value) != string(testValues[i]) {
+			t.Errorf("mismatch:%v, %v", m, testValues[i])
+		}
+	}
+	_, err = zanClient.DoRedis("HCLEAR", pk.ShardingKey(), true, pk.RawKey)
+	if err != nil {
+		t.Errorf("rsp err: %v", err)
+	}
+}
+
+func TestClientZScan(t *testing.T) {
+	conf := &Conf{
+		DialTimeout:  time.Second * 2,
+		ReadTimeout:  time.Second * 2,
+		WriteTimeout: time.Second * 2,
+		TendInterval: 1,
+		Namespace:    testNS,
+	}
+	conf.LookupList = append(conf.LookupList, pdAddr)
+	logLevel := int32(2)
+	if testing.Verbose() {
+		logLevel = 3
+	}
+	SetLogger(logLevel, newTestLogger(t))
+	zanClient := NewZanRedisClient(conf)
+	zanClient.Start()
+	defer zanClient.Stop()
+	time.Sleep(time.Second)
+
+	testTable := "unittest2-zscan"
+
+	testPrefix := "unittest-zscan-key"
+
+	pk := NewPKey(conf.Namespace, testTable, []byte(testPrefix))
+	rawKey := pk.RawKey
+	testValues := make([][]byte, 0)
+
+	var writePipelines PipelineCmdList
+	for i := 0; i < 100; i++ {
+		member := fmt.Sprintf("%04d", i)
+		t.Logf("write : %v", string(member))
+		writePipelines.Add("ZADD", pk.ShardingKey(), true, rawKey, i, member)
+		testValues = append(testValues, []byte(member))
+	}
+
+	rsps, errs := zanClient.FlushAndWaitPipelineCmd(writePipelines)
+	if len(rsps) != len(writePipelines) {
+		t.Errorf("rsp list should be equal to pipeline num %v vs %v", len(rsps), len(writePipelines))
+	}
+	t.Logf("test values: %v", len(testValues))
+	for i, rsp := range rsps {
+		if errs[i] != nil {
+			t.Errorf("rsp error: %v", errs[i])
+		}
+		_, err := redis.Int64(rsp, errs[i])
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	cur, scanRets, err := zanClient.ZScan(testTable, []byte(testPrefix), len(testValues), []byte(""))
+	if err != nil {
+		t.Error(err)
+	}
+	if len(scanRets) != len(testValues) && len(cur) == 0 {
+		t.Errorf("scan mismatch:%v, %v, %v", string(cur), len(scanRets), len(testValues))
+	}
+	if len(scanRets) == len(testValues) {
+		for i, m := range scanRets {
+			if string(m.Member) != string(testValues[i]) {
+				t.Errorf("mismatch:%v, %v", m, testValues[i])
+			}
+			score, _ := strconv.ParseFloat(string(testValues[i]), 64)
+			if m.Score != score {
+				t.Errorf("mismatch:%v, %v", m, testValues[i])
+			}
+		}
+	}
+	recvCh := zanClient.ZScanChannel(testTable, []byte(testPrefix), nil)
+	cnt := 0
+	scanRets = scanRets[:0]
+	for k := range recvCh {
+		t.Logf("member key: %v", k)
+		cnt++
+		scanRets = append(scanRets, k)
+	}
+	if len(testValues) != cnt {
+		t.Errorf("mismatch: %v, %v", cnt, len(testValues))
+	}
+
+	for i, m := range scanRets {
+		if string(m.Member) != string(testValues[i]) {
+			t.Errorf("mismatch:%v, %v", m, testValues[i])
+		}
+		score, _ := strconv.ParseFloat(string(testValues[i]), 64)
+		if m.Score != score {
+			t.Errorf("mismatch:%v, %v", m, testValues[i])
+		}
+	}
+	_, err = zanClient.DoRedis("ZCLEAR", pk.ShardingKey(), true, pk.RawKey)
+	if err != nil {
+		t.Errorf("rsp err: %v", err)
 	}
 }
